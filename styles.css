@@ -1,0 +1,79 @@
+/* ==========================================================================
+   Virtual Mount —— 注入到原生文件浏览器里的虚拟节点样式
+   目标：插件画出来的节点，外观与核心渲染的节点完全一致。
+   核心的类名（tree-item / tree-item-self / tree-item-inner / tree-item-flair…）
+   我们全都沿用，所以这里只补核心没覆盖到的几处。
+   ========================================================================== */
+
+/* 我们自己的挂载容器：紧跟在核心的 children 之后，同样带缩进引导线 */
+.vm-children {
+  margin-top: 2px;
+}
+
+/* 虚拟文件夹折叠时，隐藏它自己的子容器（核心只负责它自己的 childrenEl） */
+.nav-folder.vm-folder.is-collapsed > .vm-children-inner {
+  display: none;
+}
+
+/* 目标文件夹折叠时（核心会把 childrenEl 摘掉），我们的挂载块也要一起藏起来 */
+.nav-folder.is-collapsed > .vm-children {
+  display: none;
+}
+
+.nav-folder.vm-folder > .vm-children-inner {
+  display: block;
+}
+
+/* 虚拟节点可点击 */
+.nav-folder-title.vm-folder-title,
+.nav-file-title.vm-file-title {
+  cursor: pointer;
+}
+
+/* 区分虚拟位置的小角标：放在树原生 flair 位置（右侧） */
+.tree-item-flair.vm-badge {
+  opacity: 0.45;
+  font-size: var(--font-ui-smaller);
+}
+
+/* 当前打开的文件在虚拟位置同样高亮（原生行也会高亮，形成“两处同步”） */
+body:not(.is-grabbing) .nav-file-title.vm-file-title.is-active:hover,
+.nav-file-title.vm-file-title.is-active {
+  color: var(--nav-item-color-active);
+  background-color: var(--nav-item-background-active);
+  font-weight: var(--nav-item-weight-active);
+}
+
+/* 超大目录的截断提示 */
+.vm-more {
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.6;
+  font-style: italic;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.vm-more:hover {
+  color: var(--text-normal);
+}
+
+/* 设置页 / 弹窗 */
+.vm-hint {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0 0 12px;
+}
+
+.vm-empty {
+  color: var(--text-faint);
+  font-size: 13px;
+}
+
+.vm-modal-footer {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 18px;
+}

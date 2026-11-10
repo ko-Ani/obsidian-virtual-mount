@@ -1,0 +1,36 @@
+{
+  "name": "obsidian-virtual-mount",
+  "version": "0.1.0",
+  "description": "Show a real folder or note as a virtual subfolder anywhere in the Obsidian file explorer.",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "typecheck": "tsc -noEmit -skipLibCheck",
+    "test": "node esbuild.config.mjs production && node scripts/build-tests.mjs && node test/i18n.test.mjs && node test/dom.test.mjs && node test/plugin.test.mjs"
+  },
+  "keywords": [
+    "obsidian",
+    "obsidian-plugin",
+    "file-explorer",
+    "folder",
+    "virtual-folder"
+  ],
+  "author": "ko-Ani",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ko-Ani/obsidian-virtual-mount.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ko-Ani/obsidian-virtual-mount/issues"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.2",
+    "esbuild": "^0.21.5",
+    "jsdom": "^31.0.0",
+    "obsidian": "^1.5.7",
+    "typescript": "^5.4.5"
+  }
+}

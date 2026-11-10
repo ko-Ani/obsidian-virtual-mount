@@ -1,0 +1,5 @@
+node_modules/
+test/*.cjs
+*.zip
+*.log
+.DS_Store

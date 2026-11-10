@@ -1,0 +1,110 @@
+# Virtual Mount
+
+**Show a real folder (or a single note) as a virtual subfolder anywhere in the file explorer — nothing is moved, copied, or symlinked.**
+
+```
+Disk (the only real copy)          Obsidian file explorer
+Projects/Website/                  01 In progress/
+├── alpha.md            ──────▶    ├── meeting-notes.md
+├── beta.md                        └── Website ↪          ← virtual mount
+└── design/                            ├── alpha
+                                       ├── beta
+                                       └── design
+```
+
+The virtual entry looks and behaves like a native folder: click a note and the real file opens, edits show up in both places instantly, and adding or deleting files in `Projects/Website` is reflected in the mirror. **No folder is created on disk** — the mapping lives in the plugin's own `data.json`.
+
+[中文说明](README.zh.md)
+
+## Features
+
+- **Folder mirror** — mount a whole folder under any other folder; the tree follows the source live (create / delete / rename).
+- **Single-note mounts** — put one note in several places at once.
+- **Right-click entry** — right-click (or long-press on mobile) any folder → `Mount as virtual folder…`, pick the target and edit the display name.
+- **Native look** — reuses the core tree classes (`tree-item`, `tree-item-self`, `tree-item-flair`…), so themes and hover states apply.
+- **Rename tracking** — if you rename or move the source folder, the mount follows automatically.
+- **Zero disk footprint** — no symlinks, no junctions, no duplicated files.
+- **Desktop and mobile** — same code path; the long-press menu and clipboard fallback work in the mobile app.
+
+## Why not a symlink?
+
+Obsidian's file index is built by scanning the vault: `TFile.path` *is* the real path, and no API can add a virtual path to that index. Obsidian also explicitly ignores intra-vault symlinks, because two copies of the same file would make `[[wikilinks]]` ambiguous ([help](https://obsidian.md/help/symlinks)).
+
+So this plugin is a **view layer**: it reads real `TFolder` data and injects equivalent nodes into the native file explorer. The virtual path is visual only — the file always keeps its real path, which is exactly why edits stay in sync.
+
+## Installation
+
+**Community plugins (after review):** Settings → Community plugins → Browse → search “Virtual Mount”.
+
+**Manual:**
+
+1. Download `main.js`, `manifest.json` and `styles.css` from the latest release.
+2. Put them in `<your vault>/.obsidian/plugins/virtual-mount/`.
+3. Reload Obsidian and enable **Virtual Mount** in Settings → Community plugins.
+
+**BRAT:** add `ko-Ani/obsidian-virtual-mount` as a beta plugin.
+
+## Usage
+
+**Right-click** a folder in the file explorer → `Mount as virtual folder…` → choose **Mount to** and edit **Display name** → Mount.
+Right-clicking a note shows `Mount as virtual note…` instead.
+
+The **settings tab** has the full editor (type, source, target, name), a list of mounts with enable/disable toggles, and display options.
+
+Commands (`Ctrl/Cmd+P`):
+
+- `Add virtual mount…`
+- `Mount the current note to…`
+- `Mount the current note's folder to…`
+- `Refresh virtual mounts`
+
+Interactions:
+
+- Click a virtual note → opens the real file (`Ctrl/Cmd+click` or middle-click for a new tab).
+- Right-click a virtual entry → reveal the real location, copy the real path, or remove the mount.
+- Click a virtual folder → collapse/expand; the state is remembered.
+
+## How it works
+
+Obsidian 1.6+ renders the file explorer with a virtualized tree: `setChildrenInPlace()` replaces the children of `.nav-folder-children` on scroll, so anything appended there is wiped. This plugin therefore:
+
+1. finds the real folder element via `data-path` on its title,
+2. creates a sibling container `.vm-children` (same `tree-item-children` styling, but owned by the plugin),
+3. rebuilds only when the source changed, and re-injects after the core re-renders (`MutationObserver`),
+4. stops propagation on `click` / `auxclick` / `contextmenu` so the core's delegated handlers never see virtual rows.
+
+The `file-menu` workspace event is used to add the right-click item, filtered to the `file-explorer-context-menu` source.
+
+## Mobile
+
+The mobile app runs the same bundle and the same tree DOM, so mounts render identically. Long-press opens the same context menu, and “Copy real path” falls back to `execCommand` where `navigator.clipboard` is unavailable.
+
+`isDesktopOnly` is `false`.
+
+## Compatibility
+
+- Obsidian **1.6.0+**, desktop and mobile.
+- Tested against **1.8.9** (DOM structure verified from the shipped `app.js`).
+
+## Limitations
+
+- **Read-only navigation.** Virtual rows cannot be dragged, renamed or deleted — do that in the real location (right-click → reveal).
+- **Virtual paths are not linkable.** `[[01 In progress/Website/alpha]]` will not resolve; links always use the real path.
+- **Not in search, Quick Switcher or Graph** — those read the index, which only knows real paths.
+- **Mount blocks always sit at the top of the target folder**, because the core's virtual list owns the rest of the children.
+- **Upgrade risk.** This depends on core DOM structure; a major Obsidian update may need an adaptation.
+
+## Development
+
+```bash
+pnpm install
+pnpm dev      # watch build
+pnpm build    # typecheck + production bundle -> main.js
+pnpm test     # jsdom tests: DOM injection, plugin entry, i18n
+```
+
+The DOM tests replicate the real 1.8.x tree structure extracted from `app.js`, including the virtualized-children behaviour.
+
+## License
+
+[MIT](LICENSE)
