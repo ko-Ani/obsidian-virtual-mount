@@ -1,5 +1,6 @@
 import { App, Menu, Notice, TAbstractFile, TFile, TFolder, setIcon } from "obsidian";
 import { t } from "./i18n";
+import { cleanPath } from "./types";
 import type { Mount, Settings } from "./types";
 
 export interface TreeHost {
@@ -177,7 +178,7 @@ export class VirtualTree {
       if (mount.kind === "folder" && !(src instanceof TFolder)) continue;
       if (mount.kind === "file" && !(src instanceof TFile)) continue;
 
-      const folderEl = anchors.get(this.normalize(mount.under) || "/") ?? null;
+      const folderEl = anchors.get(cleanPath(mount.under) || "/") ?? null;
       if (!folderEl) continue;
 
       live.add(mount.id);
@@ -535,8 +536,7 @@ export class VirtualTree {
       try {
         const area = document.createElement("textarea");
         area.value = path;
-        area.style.position = "fixed";
-        area.style.opacity = "0";
+        area.className = "vm-clip-helper";
         document.body.appendChild(area);
         area.select();
         const ok = document.execCommand("copy");
@@ -561,12 +561,8 @@ export class VirtualTree {
 
   /* ------------------------------------------------------------------ 工具函数 */
 
-  private normalize(path: string): string {
-    return (path ?? "").trim().replace(/^\/+|\/+$/g, "");
-  }
-
   private resolve(path: string): TAbstractFile | null {
-    const p = this.normalize(path);
+    const p = cleanPath(path);
     if (!p) return this.app.vault.getRoot();
     return this.app.vault.getAbstractFileByPath(p) ?? null;
   }

@@ -9,7 +9,7 @@ import {
 } from "obsidian";
 import type VirtualMountPlugin from "./main";
 import { t } from "./i18n";
-import { Mount, MountKind, newId, normalizeMount } from "./types";
+import { Mount, MountKind, cleanPath, newId, normalizeMount } from "./types";
 
 export interface PathEntry {
   path: string;
@@ -184,8 +184,8 @@ export class MountEditorModal extends Modal {
 
   private async submit(): Promise<void> {
     const draft = this.draft;
-    const source = draft.source.trim();
-    const underPath = draft.under.trim().replace(/^\/+|\/+$/g, "");
+    const source = cleanPath(draft.source);
+    const underPath = cleanPath(draft.under);
 
     if (!source) {
       new Notice(t("notice.sourceEmpty"));

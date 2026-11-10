@@ -11,7 +11,6 @@ export class VirtualMountSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: t("settings.title") });
     containerEl.createEl("p", { cls: "vm-hint", text: t("settings.intro") });
 
     new Setting(containerEl)
@@ -56,7 +55,7 @@ export class VirtualMountSettingTab extends PluginSettingTab {
         );
     }
 
-    containerEl.createEl("h3", { text: t("settings.options") });
+    new Setting(containerEl).setName(t("settings.options")).setHeading();
 
     new Setting(containerEl)
       .setName(t("settings.foldersFirst"))

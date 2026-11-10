@@ -58,6 +58,17 @@ body:not(.is-grabbing) .nav-file-title.vm-file-title.is-active:hover,
   color: var(--text-normal);
 }
 
+/* 复制路径失败时的隐藏 textarea（移动端 clipboard API 不可用） */
+.vm-clip-helper {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* 设置页 / 弹窗 */
 .vm-hint {
   color: var(--text-muted);

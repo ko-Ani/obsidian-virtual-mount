@@ -1,3 +1,5 @@
+import { normalizePath } from "obsidian";
+
 /** 挂载类型：整个文件夹镜像，还是单篇文件。 */
 export type MountKind = "folder" | "file";
 
@@ -49,11 +51,22 @@ export function newId(): string {
   return `vm-${Date.now().toString(36)}-${counter}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+/**
+ * 把用户输入/配置里的路径清洗成仓库内的相对路径；根目录统一用空串表示。
+ * 走 Obsidian 的 normalizePath，保证跨平台斜杠、首尾斜杠、NBSP 都被处理。
+ */
+export function cleanPath(path: string): string {
+  const raw = (path ?? "").trim();
+  if (!raw || raw === "/" || raw === "\\") return "";
+  const normalized = normalizePath(raw);
+  return normalized === "/" ? "" : normalized;
+}
+
 /** 把挂载配置规范化，兼容旧版本/手写 data.json。 */
 export function normalizeMount(raw: Partial<Mount>): Mount {
   const kind: MountKind = raw.kind === "file" ? "file" : "folder";
-  const source = (raw.source ?? "").trim().replace(/^\/+|\/+$/g, "");
-  const under = (raw.under ?? "").trim().replace(/^\/+|\/+$/g, "");
+  const source = cleanPath(raw.source ?? "");
+  const under = cleanPath(raw.under ?? "");
   const name = (raw.name ?? "").trim() || source.split("/").pop() || "未命名";
   return {
     id: raw.id || newId(),

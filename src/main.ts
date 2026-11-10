@@ -1,5 +1,5 @@
 import { Menu, Notice, Plugin, TAbstractFile, TFile, TFolder } from "obsidian";
-import { DEFAULT_SETTINGS, Mount, MountKind, newId, normalizeMount, Settings } from "./types";
+import { DEFAULT_SETTINGS, Mount, MountKind, newId, normalizeMount, Settings, cleanPath } from "./types";
 import { TreeHost, VirtualTree } from "./tree";
 import { VirtualMountSettingTab } from "./settings-tab";
 import { t } from "./i18n";
@@ -95,11 +95,12 @@ export default class VirtualMountPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
-  removeMount(id: string): void {
+  async removeMount(id: string): Promise<void> {
     const before = this.settings.mounts.length;
     this.settings.mounts = this.settings.mounts.filter((m) => m.id !== id);
     if (this.settings.mounts.length === before) return;
-    void this.saveSettings().then(() => this.tree.syncNow(true));
+    await this.saveSettings();
+    this.tree.syncNow(true);
     new Notice(t("notice.unmounted"));
   }
 
@@ -130,12 +131,16 @@ export default class VirtualMountPlugin extends Plugin {
 
   private pickTarget(base: { kind: MountKind; source: string; name: string }): void {
     new PathSuggestModal(this.app, folderEntries(this.app, true), (path) => {
-      void this.addMount(base.kind, base.source, path, base.name).then((result) => {
-        new Notice(
-          result.ok ? t("notice.mounted", { target: path || t("label.root") }) : result.error
-        );
-      });
+      void this.mountTo(base, path);
     }).open();
+  }
+
+  private async mountTo(
+    base: { kind: MountKind; source: string; name: string },
+    path: string
+  ): Promise<void> {
+    const result = await this.addMount(base.kind, base.source, path, base.name);
+    new Notice(result.ok ? t("notice.mounted", { target: path || t("label.root") }) : result.error);
   }
 
   /* ---------------------------------------------------------- 右键菜单入口 */
@@ -182,8 +187,8 @@ export default class VirtualMountPlugin extends Plugin {
     under: string,
     displayName: string
   ): Promise<{ ok: true; mount: Mount } | { ok: false; error: string }> {
-    const srcPath = source.trim().replace(/^\/+|\/+$/g, "");
-    const underPath = under.trim().replace(/^\/+|\/+$/g, "");
+    const srcPath = cleanPath(source);
+    const underPath = cleanPath(under);
 
     const src = this.app.vault.getAbstractFileByPath(srcPath);
     if (!src) return { ok: false, error: t("err.sourceMissing", { path: srcPath }) };
