@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0
+
+- Right-click / long-press a virtual entry now opens the native context menu of its real source folder or note. `New note`, `New folder`, `Rename`, `Move`, `Make a copy` and `Delete` operate on the source, not on the virtual row.
+- The plugin's own menu items (reveal, copy real path, remove mount) are appended to that native menu; a built-in fallback menu is used if the core view method is unavailable.
+- Fix: on Obsidian 1.14+, the menu could close itself after ~500 ms because core attaches it to the real (often off-screen) tree row. The plugin now hides that row association while the menu is being built and restores it immediately afterwards.
+
 ## 0.1.0
 
 First release.

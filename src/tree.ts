@@ -1,4 +1,5 @@
 import { App, Menu, Notice, TAbstractFile, TFile, TFolder, setIcon } from "obsidian";
+import type { MenuItem } from "obsidian";
 import { t } from "./i18n";
 import { cleanPath } from "./types";
 import type { Mount, Settings } from "./types";
@@ -19,10 +20,28 @@ const ROLE_ROOT = "root";
 /** 我们自己的挂载容器（核心的虚拟滚动只会动它自己的 childrenEl，不会动这里）。 */
 const HOLDER_CLASS = "vm-children";
 
+/** 核心文件浏览器视图的类型。 */
+const EXPLORER_VIEW_TYPE = "file-explorer";
+
+/**
+ * 核心文件浏览器视图上我们用到的那部分私有 API。
+ *
+ * 核心的右键菜单（新建笔记 / 新建文件夹 / 重命名 / 删除 / 移动 / 复制……）
+ * 不是通过 `file-menu` 事件添加的，而是 `onFileContextMenu()` 里直接构造的。
+ * 想“等效于长按真实目录”，只能把真实的 TAbstractFile 交回给核心的这个方法，
+ * 让核心自己按它平时的逻辑生成菜单。方法不存在时再退回插件自己的精简菜单。
+ */
+interface FileExplorerView {
+  containerEl?: HTMLElement;
+  /** 核心为每个真实条目保存的渲染对象；新版本菜单会把它当成菜单的“父元素”。 */
+  fileItems?: Record<string, unknown>;
+  onFileContextMenu?: (evt: MouseEvent, file: TAbstractFile) => void;
+}
+
 /**
  * 把虚拟挂载点注入原生文件浏览器的 DOM。
  *
- * 背景（Obsidian 1.8.x 实测结构）：
+ * 背景（Obsidian 1.8.x / 1.14.x 实测结构）：
  *   div.tree-item.nav-folder
  *     div.tree-item-self.nav-folder-title[data-path] > div.tree-item-inner
  *     div.tree-item-children.nav-folder-children   ← 由虚拟滚动 setChildrenInPlace 独占管理
@@ -346,7 +365,8 @@ export class VirtualTree {
     title.addEventListener("contextmenu", (evt) => {
       evt.preventDefault();
       evt.stopPropagation();
-      if (mount && isRoot) this.showFolderMenu(evt, mount, folder);
+      // 把真实文件夹交给核心：菜单里的新建 / 重命名 / 删除等操作都作用于源目录。
+      this.showSourceMenu(evt, folder, isRoot ? mount : null);
     });
 
     if (!collapsed) this.fill(childrenEl, folder);
@@ -419,7 +439,8 @@ export class VirtualTree {
     title.addEventListener("contextmenu", (evt) => {
       evt.preventDefault();
       evt.stopPropagation();
-      this.showFileMenu(evt, mount, file);
+      // 单文件挂载的根节点也要把真实文件交回核心，菜单操作同样作用于源文件。
+      this.showSourceMenu(evt, file, isRoot ? mount : null);
     });
 
     return el;
@@ -480,51 +501,128 @@ export class VirtualTree {
     }
   }
 
-  private showFolderMenu(evt: MouseEvent, mount: Mount, folder: TFolder): void {
-    const menu = new Menu();
-    menu.addItem((i) =>
-      i
-        .setTitle(t("menu.revealFolder"))
-        .setIcon("folder-open")
-        .onClick(() => this.reveal(folder))
-    );
-    menu.addItem((i) =>
-      i
-        .setTitle(t("menu.copyPath"))
-        .setIcon("clipboard")
-        .onClick(() => this.copyPath(folder.path))
-    );
-    menu.addSeparator();
-    menu.addItem((i) =>
-      i.setTitle(t("menu.unmount")).setIcon("trash").onClick(() => this.host.removeMount(mount.id))
-    );
-    menu.showAtMouseEvent(evt);
+  /**
+   * 在虚拟节点上长按/右键时，弹出与「长按真实目录/文件」等效的原生菜单。
+   *
+   * 核心的菜单项（新建笔记 / 新建文件夹 / 重命名 / 移动 / 删除……）不是在
+   * `file-menu` 事件里加的，而是文件浏览器视图的 `onFileContextMenu()`
+   * 内部直接构造的。所以这里把真实的 TAbstractFile 交回核心，让核心用
+   * 它平时的逻辑生成菜单；同时用一次性的 `file-menu` 监听补上插件自己的
+   * 「定位 / 复制真实路径 / 取消挂载」。
+   */
+  private showSourceMenu(evt: MouseEvent, target: TAbstractFile, mount: Mount | null): void {
+    const view = this.explorerView(evt);
+    if (!view?.onFileContextMenu) {
+      this.showFallbackMenu(evt, target, mount);
+      return;
+    }
+
+    const ref = this.app.workspace.on("file-menu", (menu: Menu, file: TAbstractFile) => {
+      if (file !== target) return;
+      this.addVirtualMenuItems(menu, target, mount);
+    });
+
+    /*
+     * Obsidian 1.14 起，核心的 onFileContextMenu 会把菜单“挂”到真实条目的 DOM 上：
+     *   i.setParentElement(f.selfEl)
+     * 菜单会在 500ms 后检查这个父元素是否还可见，不可见就自动关闭。
+     * 虚拟挂载的源目录通常折叠在别处、并不在屏幕上，菜单就会刚出现就消失。
+     *
+     * 这里在调用核心生成菜单期间临时把这个条目的渲染对象藏起来，核心就不会
+     * 设置 parentEl（也不会滚动/聚焦到真实位置），调用结束后立刻还原。
+     */
+    const items = view.fileItems;
+    const hidden = !!items && Object.prototype.hasOwnProperty.call(items, target.path);
+    const item = hidden ? items![target.path] : undefined;
+    if (hidden) delete items![target.path];
+
+    try {
+      view.onFileContextMenu(evt, target);
+    } catch {
+      // 核心私有 API 变动时不要吞掉右键菜单，退回插件自己的版本。
+      this.showFallbackMenu(evt, target, mount);
+    } finally {
+      if (hidden) items![target.path] = item;
+      this.app.workspace.offref(ref);
+    }
   }
 
-  private showFileMenu(evt: MouseEvent, mount: Mount | null, file: TFile): void {
+  /** 找到当前正在显示这个虚拟节点的文件浏览器视图（多窗口/多窗格时取所属的那个）。 */
+  private explorerView(evt: MouseEvent): FileExplorerView | null {
+    let views: FileExplorerView[] = [];
+    try {
+      views = this.app.workspace
+        .getLeavesOfType(EXPLORER_VIEW_TYPE)
+        .map((leaf) => leaf.view as unknown as FileExplorerView)
+        .filter((view) => typeof view?.onFileContextMenu === "function");
+    } catch {
+      return null;
+    }
+    const target = (evt.target as Node | null) ?? null;
+    if (target) {
+      const owner = views.find((view) => view.containerEl?.contains(target));
+      if (owner) return owner;
+    }
+    return views[0] ?? null;
+  }
+
+  /** 在核心生成的原生菜单里追加插件自己的项目。 */
+  private addVirtualMenuItems(menu: Menu, target: TAbstractFile, mount: Mount | null): void {
+    const isFolder = target instanceof TFolder;
+    menu.addItem((i) => {
+      i.setTitle(t(isFolder ? "menu.revealFolder" : "menu.revealFile"))
+        .setIcon("folder-open")
+        .onClick(() => this.reveal(target));
+      this.setMenuSection(i, "view");
+    });
+    menu.addItem((i) => {
+      i.setTitle(t("menu.copyPath"))
+        .setIcon("clipboard")
+        .onClick(() => this.copyPath(target.path));
+      this.setMenuSection(i, "action");
+    });
+    if (mount) {
+      menu.addItem((i) => {
+        i.setTitle(t("menu.unmount"))
+          .setIcon("unlink")
+          .onClick(() => this.host.removeMount(mount.id));
+        // 放在 system 区而不是 danger 区：它只移除虚拟挂载，不删除源文件。
+        this.setMenuSection(i, "system");
+      });
+    }
+  }
+
+  /** 核心视图不可用时（或未来改掉私有方法）至少保留插件原本的菜单。 */
+  private showFallbackMenu(evt: MouseEvent, target: TAbstractFile, mount: Mount | null): void {
     const menu = new Menu();
+    const isFolder = target instanceof TFolder;
     menu.addItem((i) =>
       i
-        .setTitle(t("menu.revealFile"))
+        .setTitle(t(isFolder ? "menu.revealFolder" : "menu.revealFile"))
         .setIcon("folder-open")
-        .onClick(() => this.reveal(file))
+        .onClick(() => this.reveal(target))
     );
     menu.addItem((i) =>
-      i
-        .setTitle(t("menu.copyPath"))
-        .setIcon("clipboard")
-        .onClick(() => this.copyPath(file.path))
+      i.setTitle(t("menu.copyPath")).setIcon("clipboard").onClick(() => this.copyPath(target.path))
     );
     if (mount) {
       menu.addSeparator();
       menu.addItem((i) =>
         i
           .setTitle(t("menu.unmount"))
-          .setIcon("trash")
+          .setIcon("unlink")
           .onClick(() => this.host.removeMount(mount.id))
       );
     }
     menu.showAtMouseEvent(evt);
+  }
+
+  private setMenuSection(item: MenuItem, section: string): void {
+    try {
+      item.setSection?.(section);
+    } catch {
+      /* 老版本没有 setSection，忽略 */
+    }
   }
 
   /**

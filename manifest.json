@@ -1,7 +1,7 @@
 {
   "id": "virtual-mount",
   "name": "Virtual Mount",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "minAppVersion": "1.6.0",
   "description": "Show a real folder or note as a virtual subfolder anywhere in the file explorer. Files stay in one place, and both locations update together.",
   "author": "ko-Ani",

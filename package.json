@@ -1,6 +1,6 @@
 {
   "name": "obsidian-virtual-mount",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Show a real folder or note as a virtual subfolder anywhere in the Obsidian file explorer.",
   "main": "main.js",
   "private": true,

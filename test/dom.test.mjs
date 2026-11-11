@@ -1,6 +1,6 @@
 /**
- * 用 jsdom 复刻 Obsidian 1.8.x 真实文件树 DOM，验证注入逻辑。
- * DOM 模板是从 Obsidian app.js 里挖出来的（tree-item / tree-item-self / nav-folder-children）。
+ * 用 jsdom 复刻 Obsidian 1.8.x / 1.14.x 真实文件树 DOM，验证注入逻辑。
+ * DOM 模板是从 Obsidian `obsidian.asar` 里挖出来的（tree-item / tree-item-self / nav-folder-children）。
  *
  * 运行：node test/dom.test.mjs
  */
@@ -119,7 +119,65 @@ class TFolder extends TAbstractFile {
   }
 }
 
-const clicks = [];
+const menus = [];
+class FakeMenu {
+  constructor() {
+    this.items = [];
+  }
+  addItem(cb) {
+    const item = {
+      title: "",
+      icon: "",
+      section: "",
+      click: null,
+      setTitle(value) {
+        this.title = value;
+        return this;
+      },
+      setIcon(value) {
+        this.icon = value;
+        return this;
+      },
+      setSection(value) {
+        this.section = value;
+        return this;
+      },
+      onClick(fn) {
+        this.click = fn;
+        return this;
+      },
+    };
+    cb(item);
+    this.items.push(item);
+    return this;
+  }
+  addSeparator() {
+    this.items.push({ separator: true });
+    return this;
+  }
+  setParentElement(el) {
+    this.parentEl = el;
+    return this;
+  }
+  showAtMouseEvent(evt) {
+    menus.push({ menu: this, evt });
+  }
+}
+
+/* 一个极简的 workspace 事件总线，模拟 Obsidian 的 on / offref / trigger。 */
+const workspaceHandlers = new Map();
+function onWorkspace(name, cb) {
+  if (!workspaceHandlers.has(name)) workspaceHandlers.set(name, new Set());
+  workspaceHandlers.get(name).add(cb);
+  return { name, cb };
+}
+function offref(ref) {
+  workspaceHandlers.get(ref.name)?.delete(ref.cb);
+}
+function triggerWorkspace(name, ...args) {
+  for (const cb of [...(workspaceHandlers.get(name) ?? [])]) cb(...args);
+}
+
 const obsidianStub = {
   App: class {},
   TAbstractFile,
@@ -131,30 +189,7 @@ const obsidianStub = {
     el.appendChild(svg);
   },
   normalizePath: (p) => p,
-  Menu: class {
-    addItem(cb) {
-      const item = {
-        setTitle() {
-          return item;
-        },
-        setIcon() {
-          return item;
-        },
-        onClick(fn) {
-          item.fn = fn;
-          return item;
-        },
-      };
-      cb(item);
-      return this;
-    }
-    addSeparator() {
-      return this;
-    }
-    showAtMouseEvent(evt) {
-      clicks.push({ type: "menu", evt });
-    }
-  },
+  Menu: FakeMenu,
 };
 
 const Module = require("module");
@@ -197,6 +232,26 @@ function makeVault() {
   addFolder("03-资料/项目A/子目录");
 
   const opened = [];
+  const menuCalls = [];
+  // 模拟 Obsidian 1.14 的核心文件浏览器视图：核心在 onFileContextMenu 里直接
+  // 添加原生菜单项，触发 file-menu，然后（如果 fileItems 里还有这个条目）
+  // 把菜单挂到真实条目的 DOM 上，最后 showAtMouseEvent。
+  const explorerView = {
+    containerEl: document.querySelector(".workspace-leaf-content"),
+    fileItems: {
+      "03-资料/项目A": { selfEl: document.createElement("div") },
+      "03-资料/项目A/alpha.md": { selfEl: document.createElement("div") },
+    },
+    onFileContextMenu(evt, file) {
+      menuCalls.push(file);
+      const menu = new FakeMenu();
+      menu.addItem((item) => item.setTitle("原生：重命名").setIcon("lucide-edit-3"));
+      triggerWorkspace("file-menu", menu, file, "file-explorer-context-menu", null);
+      const item = this.fileItems?.[file.path];
+      if (item) menu.setParentElement(item.selfEl);
+      menu.showAtMouseEvent(evt);
+    },
+  };
   const app = {
     vault: {
       getRoot: () => root,
@@ -209,9 +264,13 @@ function makeVault() {
           opened.push(file.path);
         },
       }),
+      getLeavesOfType: (type) => (type === "file-explorer" ? [{ view: explorerView }] : []),
+      on: onWorkspace,
+      offref,
+      trigger: triggerWorkspace,
     },
   };
-  return { app, folders, files, root, src, opened };
+  return { app, folders, files, root, src, opened, menuCalls, explorerView };
 }
 
 function buildTreeDom(rootFolder) {
@@ -254,7 +313,7 @@ function buildTreeDom(rootFolder) {
 
 /* ---------------------------------------------------------------------- 用例 */
 
-const { app, folders, root, opened } = makeVault();
+const { app, folders, root, opened, menuCalls, explorerView } = makeVault();
 const container = buildTreeDom(root);
 const hostSettings = {
   mounts: [],
@@ -375,6 +434,104 @@ assert.equal(holder3.querySelectorAll('[data-vm-id="m2"]').length, 0, "删除后
 hostSettings.mounts = [];
 tree.syncNow(true);
 assert.equal(document.querySelectorAll(".vm-children").length, 0, "空容器应被移除");
+
+// 11) 长按/右键虚拟挂载根目录 -> 弹出源目录的原生菜单
+hostSettings.mounts = [
+  {
+    id: "m3",
+    kind: "folder",
+    source: "03-资料/项目A",
+    under: "01-进行中",
+    name: "项目A",
+    enabled: true,
+    collapsed: false,
+  },
+];
+tree.syncNow(true);
+const holder4 = Array.from(fresh.children).find((el) => el.classList.contains("vm-children"));
+const rootFolderTitle = holder4.querySelector('.vm-folder-title[data-vm-role="root"]');
+assert.ok(rootFolderTitle, "应有虚拟挂载根目录");
+
+rootFolderTitle.dispatchEvent(
+  new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 30, clientY: 40 })
+);
+assert.equal(
+  menuCalls.at(-1),
+  folders.get("03-资料/项目A"),
+  "菜单必须把真实源文件夹交给核心（操作作用于源目录）"
+);
+const rootMenu = menus.at(-1).menu;
+const rootTitles = rootMenu.items.filter((item) => !item.separator).map((item) => item.title);
+assert.equal(
+  rootMenu.parentEl,
+  undefined,
+  "不能把菜单挂到不可见的真实条目上，否则核心会在 500ms 后自动关闭它"
+);
+assert.ok(explorerView.fileItems["03-资料/项目A"], "调用结束后应还原 fileItems");
+assert.ok(rootTitles.includes("原生：重命名"), "核心原生菜单项应保留");
+assert.ok(rootTitles.includes("在文件浏览器中定位真实文件夹"), "应保留定位真实文件夹");
+assert.ok(rootTitles.includes("复制真实路径"), "应保留复制真实路径");
+assert.ok(rootTitles.includes("取消此挂载"), "挂载根目录应有取消挂载");
+
+// 12) 嵌套虚拟文件 -> 同样打开真实文件的原生菜单，但没有取消挂载
+const nestedFileTitle = holder4.querySelector(
+  '.vm-file-title[data-vm-src="03-资料/项目A/alpha.md"]'
+);
+assert.ok(nestedFileTitle, "应有嵌套虚拟文件");
+nestedFileTitle.dispatchEvent(
+  new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 10, clientY: 12 })
+);
+assert.equal(menuCalls.at(-1).path, "03-资料/项目A/alpha.md", "嵌套虚拟行也应交给真实文件");
+const nestedMenu = menus.at(-1).menu;
+assert.equal(nestedMenu.parentEl, undefined, "嵌套虚拟行也不能挂到真实条目上");
+assert.ok(explorerView.fileItems["03-资料/项目A/alpha.md"], "嵌套调用后应还原 fileItems");
+const nestedTitles = nestedMenu.items.filter((item) => !item.separator).map((item) => item.title);
+assert.ok(nestedTitles.includes("在文件浏览器中定位真实文件"));
+assert.ok(nestedTitles.includes("复制真实路径"));
+assert.ok(!nestedTitles.includes("取消此挂载"), "非挂载点不应出现取消挂载");
+
+// 13) 点击原生菜单里的「取消此挂载」-> 移除的是这个挂载配置
+const unmountItem = rootMenu.items.find((item) => item.title === "取消此挂载");
+assert.ok(unmountItem && typeof unmountItem.click === "function");
+unmountItem.click();
+assert.equal(hostSettings.mounts.length, 0, "取消挂载应删除配置");
+tree.syncNow(true);
+assert.equal(fresh.querySelectorAll(".vm-folder").length, 0, "取消后虚拟节点应被清理");
+
+// 14) 核心视图不可用时退回插件自己的精简菜单
+hostSettings.mounts = [
+  {
+    id: "m4",
+    kind: "folder",
+    source: "03-资料/项目A",
+    under: "01-进行中",
+    name: "项目A",
+    enabled: true,
+    collapsed: false,
+  },
+];
+tree.syncNow(true);
+const holder5 = Array.from(fresh.children).find((el) => el.classList.contains("vm-children"));
+const savedContextMenu = explorerView.onFileContextMenu;
+delete explorerView.onFileContextMenu;
+holder5
+  .querySelector('.vm-folder-title[data-vm-role="root"]')
+  .dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+const fallbackTitles = menus
+  .at(-1)
+  .menu.items.filter((item) => !item.separator)
+  .map((item) => item.title);
+assert.deepEqual(
+  fallbackTitles,
+  ["在文件浏览器中定位真实文件夹", "复制真实路径", "取消此挂载"],
+  "核心视图不可用时应显示插件自己的菜单"
+);
+explorerView.onFileContextMenu = savedContextMenu;
+assert.equal(
+  workspaceHandlers.get("file-menu")?.size ?? 0,
+  0,
+  "一次性的 file-menu 监听应在菜单显示后被移除"
+);
 
 tree.stop();
 console.log("\n✅ 全部 DOM 用例通过");
