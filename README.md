@@ -56,19 +56,19 @@
 
 ## 安装
 
-**方式一：手动安装**
+**方式一：社区插件商店（推荐）**
 
-1. 到 [Releases](https://github.com/ko-Ani/obsidian-virtual-mount/releases/latest) 下载 `main.js`、`manifest.json`、`styles.css`；
-2. 放进 `<你的仓库>/.obsidian/plugins/virtual-mount/`；
-3. 重启 Obsidian → 设置 → 第三方插件 → 启用 **Virtual Mount**。
+设置 → 第三方插件 → 浏览 → 搜索 **Virtual Mount** → 安装并启用。
 
 **方式二：BRAT**
 
 在 BRAT 里添加 `ko-Ani/obsidian-virtual-mount` 作为 beta 插件，之后可以直接在 Obsidian 里更新。
 
-**方式三：社区插件商店**
+**方式三：手动安装**
 
-审核通过后：设置 → 第三方插件 → 浏览 → 搜索 **Virtual Mount**。
+1. 到 [Releases](https://github.com/ko-Ani/obsidian-virtual-mount/releases/latest) 下载 `main.js`、`manifest.json`、`styles.css`；
+2. 放进 `<你的仓库>/.obsidian/plugins/virtual-mount/`；
+3. 重启 Obsidian → 设置 → 第三方插件 → 启用 **Virtual Mount**。
 
 ## 使用
 

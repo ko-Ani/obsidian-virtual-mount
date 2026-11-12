@@ -56,19 +56,19 @@ The virtual entry looks and behaves like a native folder: click a note and the r
 
 ## Installation
 
-**Option 1 — manual**
+**Option 1 — community plugins (recommended)**
 
-1. Download `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/ko-Ani/obsidian-virtual-mount/releases/latest).
-2. Put them in `<your vault>/.obsidian/plugins/virtual-mount/`.
-3. Reload Obsidian and enable **Virtual Mount** in Settings → Community plugins.
+Settings → Community plugins → Browse → search “Virtual Mount” → Install and enable.
 
 **Option 2 — BRAT**
 
 Add `ko-Ani/obsidian-virtual-mount` as a beta plugin; updates can then be installed from inside Obsidian.
 
-**Option 3 — community plugins**
+**Option 3 — manual**
 
-After review: Settings → Community plugins → Browse → search “Virtual Mount”.
+1. Download `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/ko-Ani/obsidian-virtual-mount/releases/latest).
+2. Put them in `<your vault>/.obsidian/plugins/virtual-mount/`.
+3. Reload Obsidian and enable **Virtual Mount** in Settings → Community plugins.
 
 ## Usage
 
