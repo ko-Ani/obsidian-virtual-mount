@@ -284,6 +284,7 @@ for (const m of plugin.settings.mounts) {
 assert.equal(plugin.settings.mounts[0].name, "项目A", "name 缺省应取源路径最后一段");
 assert.equal(plugin.settings.mounts[1].name, "alpha 镜像");
 assert.equal(plugin.settings.maxChildren, 120);
+assert.equal(plugin.settings.mounts[0].collapsed, true, "旧配置缺少 collapsed 时默认折叠");
 
 // 2) 命令 / 功能区 / 设置页注册齐全
 const ids = plugin.commands.map((c) => c.id).sort();
@@ -325,6 +326,7 @@ const added = await plugin.addMount("folder", "03-资料/项目A", "", "项目A 
 assert.equal(added.ok, true);
 assert.equal(added.mount.name, "项目A 镜像");
 assert.equal(added.mount.under, "");
+assert.equal(added.mount.collapsed, true, "新建挂载点应默认折叠");
 assert.equal(plugin.settings.mounts.length, 3);
 
 const duplicated = await plugin.addMount("folder", "03-资料/项目A", "01-进行中", "重复");

@@ -56,6 +56,15 @@ export class VirtualTree {
   private timer: number | null = null;
   private stopped = false;
 
+  /**
+   * 虚拟子目录的展开状态，按「挂载 id + 源路径」记忆。
+   *
+   * 原生文件浏览器只展开用户点开的目录，并记住每个目录的开合状态；
+   * 这里用同样的规则：没见过的目录默认折叠，展开过的目录在父目录折叠/展开、
+   * 甚至核心重建 DOM 之后仍保持展开。挂载根节点自己的状态存在 mount.collapsed 里。
+   */
+  private expanded = new Map<string, boolean>();
+
   constructor(private app: App, private host: TreeHost) {}
 
   private get settings(): Settings {
@@ -87,6 +96,7 @@ export class VirtualTree {
     )) {
       el.remove();
     }
+    this.expanded.clear();
   }
 
   /** 仓库结构变化时调用：只把受影响的挂载标记为需要重建。 */
@@ -121,6 +131,7 @@ export class VirtualTree {
       this.timer = null;
     }
 
+    this.pruneExpanded();
     const containers = this.containers();
     if (containers.length === 0) return;
 
@@ -211,7 +222,7 @@ export class VirtualTree {
 
       existing?.remove();
       let node: HTMLElement | null = null;
-      if (src instanceof TFolder) node = this.buildFolder(mount, src, true, mount.collapsed);
+      if (src instanceof TFolder) node = this.buildFolder(mount, src, true, mount.id);
       else if (src instanceof TFile) node = this.buildFile(mount, src, true);
       if (!node) continue;
 
@@ -311,8 +322,12 @@ export class VirtualTree {
     mount: Mount | null,
     folder: TFolder,
     isRoot: boolean,
-    collapsed: boolean
+    ownerId: string
   ): HTMLElement {
+    // 挂载根节点沿用配置里持久化的开合状态；子目录只有在本次会话里被展开过才展开，
+    // 否则一律折叠——和原生文件浏览器一样，不会把整棵树一次性摊开。
+    const collapsed = isRoot && mount ? mount.collapsed : !this.isExpanded(ownerId, folder.path);
+
     const el = createDiv({ cls: "tree-item nav-folder vm-folder" });
     if (isRoot && mount) {
       el.setAttribute(ATTR_ROLE, ROLE_ROOT);
@@ -355,9 +370,12 @@ export class VirtualTree {
       if (mount && isRoot) {
         mount.collapsed = nowCollapsed;
         void this.host.saveSettings();
+      } else {
+        // 记住子目录的开合状态：父目录折叠后再展开，这里仍然保持原样。
+        this.setExpanded(ownerId, folder.path, !nowCollapsed);
       }
       if (!nowCollapsed && childrenEl.childElementCount === 0) {
-        this.fill(childrenEl, folder);
+        this.fill(childrenEl, folder, ownerId);
       }
     };
     title.addEventListener("click", toggle);
@@ -369,11 +387,15 @@ export class VirtualTree {
       this.showSourceMenu(evt, folder, isRoot ? mount : null);
     });
 
-    if (!collapsed) this.fill(childrenEl, folder);
+    if (!collapsed) this.fill(childrenEl, folder, ownerId);
     return el;
   }
 
-  private fill(childrenEl: HTMLElement, folder: TFolder): void {
+  /**
+   * 渲染某一层子节点。子目录只会画出一个折叠的标题，内容等用户点开时才再调用
+   * `fill()`，所以大目录不会在打开挂载的一瞬间被递归展开。
+   */
+  private fill(childrenEl: HTMLElement, folder: TFolder, ownerId: string): void {
     childrenEl.empty();
     const max = Math.max(20, this.settings.maxChildren);
     const items = this.sortItems(folder.children);
@@ -381,7 +403,7 @@ export class VirtualTree {
 
     for (const child of shown) {
       if (child instanceof TFolder) {
-        childrenEl.appendChild(this.buildFolder(null, child, false, false));
+        childrenEl.appendChild(this.buildFolder(null, child, false, ownerId));
       } else if (child instanceof TFile) {
         childrenEl.appendChild(this.buildFile(null, child, false));
       }
@@ -658,6 +680,27 @@ export class VirtualTree {
   }
 
   /* ------------------------------------------------------------------ 工具函数 */
+
+  private stateKey(ownerId: string, path: string): string {
+    return `${ownerId}\u0000${path}`;
+  }
+
+  private isExpanded(ownerId: string, path: string): boolean {
+    return this.expanded.get(this.stateKey(ownerId, path)) === true;
+  }
+
+  private setExpanded(ownerId: string, path: string, expanded: boolean): void {
+    this.expanded.set(this.stateKey(ownerId, path), expanded);
+  }
+
+  /** 挂载被删掉后清掉它的展开状态，避免缓存无限增长。 */
+  private pruneExpanded(): void {
+    if (this.expanded.size === 0) return;
+    const ids = new Set(this.settings.mounts.map((m) => m.id));
+    for (const key of Array.from(this.expanded.keys())) {
+      if (!ids.has(key.slice(0, key.indexOf("\u0000")))) this.expanded.delete(key);
+    }
+  }
 
   private resolve(path: string): TAbstractFile | null {
     const p = cleanPath(path);

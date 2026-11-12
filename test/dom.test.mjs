@@ -230,6 +230,9 @@ function makeVault() {
   addFile("03-资料/项目A/alpha.md");
   addFile("03-资料/项目A/beta.md");
   addFolder("03-资料/项目A/子目录");
+  addFile("03-资料/项目A/子目录/gamma.md");
+  addFolder("03-资料/项目A/子目录/深一层");
+  addFile("03-资料/项目A/子目录/深一层/delta.md");
 
   const opened = [];
   const menuCalls = [];
@@ -358,6 +361,17 @@ assert.deepEqual(names, ["alpha", "beta"], "镜像子文件应与源目录一致
 const folderNames = Array.from(virtualFolder.querySelectorAll(":scope > .nav-folder-children > .nav-folder .nav-folder-title-content")).map((el) => el.textContent);
 assert.deepEqual(folderNames, ["子目录"], "镜像子文件夹应存在");
 
+// 2.1) 子目录默认折叠，且不会把整棵子树递归展开（与原生目录一致）
+const nestedFolderEl = virtualFolder.querySelector(
+  ":scope > .nav-folder-children > .nav-folder"
+);
+assert.ok(nestedFolderEl.classList.contains("is-collapsed"), "子目录默认应折叠");
+assert.equal(
+  nestedFolderEl.querySelectorAll(".vm-file").length,
+  0,
+  "折叠的子目录不应提前渲染子文件"
+);
+
 // 3) 模拟核心虚拟滚动：清空核心 children，我们的节点必须存活
 const coreChildren = targetFolderEl.lastElementChild;
 assert.ok(coreChildren.classList.contains("nav-folder-children"), "核心 children 应是最后一个子元素");
@@ -394,6 +408,42 @@ assert.ok(icon.classList.contains("is-collapsed"), "折叠图标也要同步状�
 folderTitle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
 assert.ok(!holder.querySelector(".nav-folder").classList.contains("is-collapsed"), "再次点击应展开");
 
+// 6.1) 子目录按需展开：点开后才渲染内容，更深一层仍默认折叠
+const nestedTitle = nestedFolderEl.querySelector(":scope > .nav-folder-title");
+nestedTitle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+assert.ok(!nestedFolderEl.classList.contains("is-collapsed"), "点击子目录应展开");
+assert.equal(nestedFolderEl.querySelectorAll(".vm-file").length, 1, "展开后才渲染子文件");
+const deepFolderEl = nestedFolderEl.querySelector(
+  ":scope > .nav-folder-children > .nav-folder"
+);
+assert.ok(deepFolderEl.classList.contains("is-collapsed"), "更深一层的子目录也应默认折叠");
+assert.equal(deepFolderEl.querySelectorAll(".vm-file").length, 0, "深层内容不应提前渲染");
+
+// 6.2) 关闭父目录再打开，子目录仍保持展开（与原生文件浏览器的记忆行为一致）
+folderTitle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+folderTitle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+assert.ok(!nestedFolderEl.classList.contains("is-collapsed"), "父目录重新展开后子目录仍应展开");
+assert.equal(nestedFolderEl.querySelectorAll(".vm-file").length, 1, "子目录内容应保留");
+
+// 6.3) 强制重建（相当于核心重绘）后，展开状态仍然保留
+tree.syncNow(true);
+const holderRebuilt = Array.from(targetFolderEl.children).find((el) =>
+  el.classList.contains("vm-children")
+);
+const nestedAfterRebuild = holderRebuilt.querySelector(
+  ":scope > .vm-folder > .nav-folder-children > .nav-folder"
+);
+assert.ok(nestedAfterRebuild, "重建后应重新渲染子目录");
+assert.ok(
+  !nestedAfterRebuild.classList.contains("is-collapsed"),
+  "重建后子目录仍应保持展开"
+);
+assert.equal(nestedAfterRebuild.querySelectorAll(".vm-file").length, 1, "重建后子目录内容应恢复");
+const deepAfterRebuild = nestedAfterRebuild.querySelector(
+  ":scope > .nav-folder-children > .nav-folder"
+);
+assert.ok(deepAfterRebuild.classList.contains("is-collapsed"), "重建后深层目录仍默认折叠");
+
 // 7) 整个文件夹节点被核心重建后，能重新注入
 const fresh = document.createElement("div");
 fresh.className = "tree-item nav-folder";
@@ -407,7 +457,17 @@ targetFolderEl.replaceWith(fresh);
 tree.syncNow(false);
 const holder2 = Array.from(fresh.children).find((el) => el.classList.contains("vm-children"));
 assert.ok(holder2, "重建后应重新注入挂载容器");
-assert.equal(holder2.querySelectorAll(".vm-file").length, 2, "重建后镜像内容应恢复");
+const directFiles = holder2.querySelectorAll(
+  ":scope > .nav-folder > .nav-folder-children > .nav-file"
+);
+assert.equal(directFiles.length, 2, "重建后镜像内容应恢复");
+const nestedInHolder2 = holder2.querySelector(
+  ":scope > .nav-folder > .nav-folder-children > .nav-folder"
+);
+assert.ok(
+  !nestedInHolder2.classList.contains("is-collapsed"),
+  "重建后子目录的展开状态也应恢复"
+);
 
 // 8) 单文件挂载
 hostSettings.mounts.push({

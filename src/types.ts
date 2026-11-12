@@ -41,7 +41,8 @@ export const DEFAULT_MOUNT: Omit<Mount, "id" | "source"> = {
   under: "",
   name: "",
   enabled: true,
-  collapsed: false,
+  // 和原生文件夹一致：新建的挂载点默认折叠，点开后才展开。
+  collapsed: true,
 };
 
 let counter = 0;
@@ -75,6 +76,7 @@ export function normalizeMount(raw: Partial<Mount>): Mount {
     under,
     name,
     enabled: raw.enabled !== false,
-    collapsed: raw.collapsed === true,
+    // 只有显式记录过“展开”的挂载才保持展开；新挂载 / 旧配置缺字段时默认折叠。
+    collapsed: raw.collapsed !== false,
   };
 }
