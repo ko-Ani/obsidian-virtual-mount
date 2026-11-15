@@ -124,8 +124,8 @@ const STRINGS = {
   "settings.row.file": { en: "Single note", zh: "单文件" },
   "settings.foldersFirst": { en: "Folders before notes", zh: "文件夹排在文件前面" },
   "settings.foldersFirstDesc": {
-    en: "Sorting inside a mount block only — blocks always sit at the top of the target folder.",
-    zh: "只影响同一个挂载块内部的排序。挂载块总是显示在目标文件夹内容的顶部。",
+    en: "Order inside virtual folders only. The mount itself is inserted among the target folder's real entries by name.",
+    zh: "只影响虚拟文件夹内部的排序。挂载节点本身会按名称插到目标文件夹的真实条目中间。",
   },
   "settings.badge": { en: "Show the ↪ badge", zh: "显示 ↪ 角标" },
   "settings.badgeDesc": {

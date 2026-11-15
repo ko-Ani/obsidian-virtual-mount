@@ -2,6 +2,20 @@
 
 > 中文在前，English follows. / Chinese first, then English.
 
+## 0.2.2
+
+### 中文
+
+- 修复：挂载的文件夹不再固定排在目标目录的第一个，而是按显示名称和真实条目一起排序（文件夹优先、名称升序）。单文件挂载同样排在真实文件中间。
+- 核心重绘（滚动、展开、排序变化）把挂载行清掉时，`MutationObserver` 会立即补注入并放回同一位置。
+- 设置项「文件夹排在文件前面」现在只影响虚拟文件夹内部的排序；挂载节点本身始终跟随原生的文件夹优先顺序。
+
+### English
+
+- Fix: a mounted folder is no longer forced to the top of the target folder. It is now sorted together with the real entries by display name (folders first, ascending), and single-note mounts are sorted among real notes.
+- When a core repaint (scroll, expand, sort change) clears the mount row, the `MutationObserver` re-injects it immediately at the same position.
+- The “Folders before notes” option now only affects ordering inside virtual folders; the mount itself always follows the native folders-first order.
+
 ## 0.2.1
 
 ### 中文

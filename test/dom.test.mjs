@@ -225,6 +225,12 @@ function makeVault() {
   };
 
   addFolder("01-进行中");
+  // 目标文件夹里已有的真实条目，按原生顺序（文件夹优先、名称升序）排列，
+  // 用来验证挂载行会插进它们中间，而不是永远排在最前面。
+  addFolder("01-进行中/Alpha");
+  addFolder("01-进行中/Charlie");
+  addFile("01-进行中/00-真实笔记.md");
+  addFile("01-进行中/zzz-真实笔记.md");
   addFolder("03-资料");
   const src = addFolder("03-资料/项目A");
   addFile("03-资料/项目A/alpha.md");
@@ -276,7 +282,33 @@ function makeVault() {
   return { app, folders, files, root, src, opened, menuCalls, explorerView };
 }
 
-function buildTreeDom(rootFolder) {
+/** 按原生结构渲染一层条目（文件夹带空的 children 容器，文件是 nav-file）。 */
+function renderRows(childrenEl, children) {
+  for (const child of children) {
+    if (child instanceof TFolder) {
+      const folderEl = document.createElement("div");
+      folderEl.className = "tree-item nav-folder";
+      folderEl.innerHTML = `
+        <div class="tree-item-self nav-folder-title is-clickable mod-collapsible" data-path="${child.path}">
+          <div class="tree-item-icon collapse-icon"></div>
+          <div class="tree-item-inner nav-folder-title-content">${child.name}</div>
+        </div>
+        <div class="tree-item-children nav-folder-children"></div>`;
+      childrenEl.appendChild(folderEl);
+    } else {
+      const fileEl = document.createElement("div");
+      fileEl.className = "tree-item nav-file";
+      fileEl.innerHTML = `
+        <div class="tree-item-self nav-file-title is-clickable" data-path="${child.path}">
+          <div class="tree-item-inner nav-file-title-content">${child.basename}</div>
+        </div>`;
+      childrenEl.appendChild(fileEl);
+    }
+  }
+  return childrenEl;
+}
+
+function buildTreeDom(rootFolder, folderIndex) {
   const container = document.querySelector(".nav-files-container");
   container.replaceChildren();
   const rootEl = document.createElement("div");
@@ -289,35 +321,44 @@ function buildTreeDom(rootFolder) {
     <div class="tree-item-children nav-folder-children"></div>`;
   container.appendChild(rootEl);
 
-  const rootChildren = rootEl.querySelector(".nav-folder-children");
-  for (const child of rootFolder.children) {
-    if (child instanceof TFolder) {
-      const folderEl = document.createElement("div");
-      folderEl.className = "tree-item nav-folder";
-      folderEl.innerHTML = `
-        <div class="tree-item-self nav-folder-title is-clickable mod-collapsible" data-path="${child.path}">
-          <div class="tree-item-icon collapse-icon"></div>
-          <div class="tree-item-inner nav-folder-title-content">${child.name}</div>
-        </div>
-        <div class="tree-item-children nav-folder-children"></div>`;
-      rootChildren.appendChild(folderEl);
-    } else {
-      const fileEl = document.createElement("div");
-      fileEl.className = "tree-item nav-file";
-      fileEl.innerHTML = `
-        <div class="tree-item-self nav-file-title is-clickable" data-path="${child.path}">
-          <div class="tree-item-inner nav-file-title-content">${child.basename}</div>
-        </div>`;
-      rootChildren.appendChild(fileEl);
-    }
-  }
+  const rootChildren = rootEl.querySelector(":scope > .nav-folder-children");
+  renderRows(rootChildren, rootFolder.children);
+
+  // 模拟用户已经把「01-进行中」展开：核心会渲染它的真实子条目。
+  const target = rootChildren
+    .querySelector('.nav-folder-title[data-path="01-进行中"]')
+    .closest(".nav-folder");
+  renderRows(
+    target.querySelector(":scope > .nav-folder-children"),
+    folderIndex.get("01-进行中").children
+  );
   return container;
 }
+
+/** 模拟核心重绘：按真实数据重新生成目标文件夹的那一层条目。 */
+function nativeTargetRows(folderIndex) {
+  const wrap = document.createElement("div");
+  renderRows(wrap, folderIndex.get("01-进行中").children);
+  return Array.from(wrap.children);
+}
+
+/** 列表里每个条目的排序名（虚拟节点用显示名称，真实节点用路径最后一段）。 */
+function itemNames(parent) {
+  return Array.from(parent.children)
+    .filter((el) => el.classList.contains("tree-item"))
+    .map((el) => {
+      if (el.dataset.vmName !== undefined) return el.dataset.vmName;
+      const path = el.querySelector("[data-path]")?.getAttribute("data-path") ?? "";
+      return path.slice(path.lastIndexOf("/") + 1);
+    });
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /* ---------------------------------------------------------------------- 用例 */
 
 const { app, folders, root, opened, menuCalls, explorerView } = makeVault();
-const container = buildTreeDom(root);
+const container = buildTreeDom(root, folders);
 const hostSettings = {
   mounts: [],
   foldersFirst: true,
@@ -335,9 +376,10 @@ const tree = new VirtualTree(app, {
   },
 });
 
+// 显示名用 ASCII，保证和真实条目 Alpha / Charlie 的排序结果不依赖 ICU 的中文排序。
 const mountId = "m1";
 hostSettings.mounts = [
-  { id: mountId, kind: "folder", source: "03-资料/项目A", under: "01-进行中", name: "项目A", enabled: true, collapsed: false },
+  { id: mountId, kind: "folder", source: "03-资料/项目A", under: "01-进行中", name: "Bravo", enabled: true, collapsed: false },
 ];
 
 tree.syncNow(true);
@@ -345,24 +387,44 @@ tree.syncNow(true);
 const targetFolderEl = container
   .querySelector('.nav-folder-title[data-path="01-进行中"]')
   .closest(".nav-folder");
+const coreChildren = targetFolderEl.querySelector(":scope > .nav-folder-children");
 
-// 1) 挂载容器挂在了文件夹外层，而不是核心的 .nav-folder-children 里
-const holder = Array.from(targetFolderEl.children).find((el) => el.classList.contains("vm-children"));
-assert.ok(holder, "应该存在 .vm-children 容器");
-assert.equal(holder.parentElement, targetFolderEl, "挂载容器应是 .nav-folder 的直接子元素");
+// 1) 挂载行直接插进核心的 children 列表，不再是独立的容器
+const mounted = coreChildren.querySelector(':scope > .nav-folder[data-vm-id="m1"]');
+assert.ok(mounted, "挂载根节点应是核心 children 的直接子元素");
+assert.equal(mounted.parentElement, coreChildren, "挂载行应和真实条目在同一份列表里");
+assert.equal(targetFolderEl.querySelectorAll(".vm-children").length, 0, "不应再创建独立挂载容器");
+
+// 1.1) 按名称插到真实条目中间（文件夹优先），而不是固定在第一个
+assert.deepEqual(
+  itemNames(coreChildren),
+  ["Alpha", "Bravo", "Charlie", "00-真实笔记.md", "zzz-真实笔记.md"],
+  "挂载行应按名称排在真实同级条目中间"
+);
+assert.equal(
+  coreChildren.firstElementChild.dataset.vmId,
+  undefined,
+  "挂载行不应再固定出现在目标文件夹第一个"
+);
 
 // 2) 镜像出正确的节点
-const virtualFolder = holder.querySelector('.vm-folder [data-vm-role="root"]')?.closest(".nav-folder");
-assert.ok(virtualFolder, "应该有虚拟文件夹节点");
-assert.equal(virtualFolder.dataset.vmId, mountId);
-const names = Array.from(virtualFolder.querySelectorAll(".nav-file-title-content")).map((el) => el.textContent);
+const mountRoot = () =>
+  coreChildren.querySelector(':scope > [data-vm-role="root"][data-vm-id="m1"]');
+assert.equal(mountRoot().dataset.vmId, mountId);
+const names = Array.from(mountRoot().querySelectorAll(".nav-file-title-content")).map(
+  (el) => el.textContent
+);
 // Obsidian 原生只显示 basename（不带扩展名），这里保持一致
 assert.deepEqual(names, ["alpha", "beta"], "镜像子文件应与源目录一致");
-const folderNames = Array.from(virtualFolder.querySelectorAll(":scope > .nav-folder-children > .nav-folder .nav-folder-title-content")).map((el) => el.textContent);
+const folderNames = Array.from(
+  mountRoot().querySelectorAll(
+    ":scope > .nav-folder-children > .nav-folder .nav-folder-title-content"
+  )
+).map((el) => el.textContent);
 assert.deepEqual(folderNames, ["子目录"], "镜像子文件夹应存在");
 
 // 2.1) 子目录默认折叠，且不会把整棵子树递归展开（与原生目录一致）
-const nestedFolderEl = virtualFolder.querySelector(
+const nestedFolderEl = mountRoot().querySelector(
   ":scope > .nav-folder-children > .nav-folder"
 );
 assert.ok(nestedFolderEl.classList.contains("is-collapsed"), "子目录默认应折叠");
@@ -372,22 +434,29 @@ assert.equal(
   "折叠的子目录不应提前渲染子文件"
 );
 
-// 3) 模拟核心虚拟滚动：清空核心 children，我们的节点必须存活
-const coreChildren = targetFolderEl.lastElementChild;
-assert.ok(coreChildren.classList.contains("nav-folder-children"), "核心 children 应是最后一个子元素");
-coreChildren.replaceChildren(...[0, 1, 2].map(() => {
-  const el = document.createElement("div");
-  el.className = "tree-item nav-file";
-  return el;
-}));
-assert.ok(holder.isConnected, "核心重绘后挂载容器仍然存在");
-assert.equal(holder.querySelectorAll(".vm-file").length, 2, "镜像行数不应变化");
+// 3) 模拟核心虚拟滚动 / 重绘：整体替换 children，挂载行被清掉后必须自动补回来
+coreChildren.replaceChildren(...nativeTargetRows(folders));
+assert.equal(
+  coreChildren.querySelector('[data-vm-id="m1"]'),
+  null,
+  "核心重绘会连同挂载行一起清掉（此时确实不在了）"
+);
+await sleep(150);
+assert.ok(mountRoot(), "核心重绘后挂载行应自动补注入");
+assert.deepEqual(
+  itemNames(coreChildren),
+  ["Alpha", "Bravo", "Charlie", "00-真实笔记.md", "zzz-真实笔记.md"],
+  "补注入后仍应保持在正确的位置"
+);
+assert.equal(mountRoot().querySelectorAll(".vm-file").length, 2, "镜像行数应恢复");
 
 // 4) 点击虚拟文件 -> 打开真实文件
-const alphaTitle = holder.querySelector('.nav-file-title[data-vm-src="03-资料/项目A/alpha.md"]');
+const alphaTitle = mountRoot().querySelector(
+  '.nav-file-title[data-vm-src="03-资料/项目A/alpha.md"]'
+);
 assert.ok(alphaTitle, "能找到 alpha.md 的虚拟行");
 alphaTitle.dispatchEvent(new window.MouseEvent("click", { bubbles: true, button: 0 }));
-await new Promise((r) => setTimeout(r, 10));
+await sleep(10);
 assert.deepEqual(opened, ["03-资料/项目A/alpha.md"], "点击虚拟行应打开真实文件");
 
 // 5) 点击不应冒泡到核心（否则核心会尝试按 path 找 fileItems）
@@ -396,17 +465,17 @@ container.addEventListener("click", () => {
   bubbled = true;
 });
 alphaTitle.dispatchEvent(new window.MouseEvent("click", { bubbles: true, button: 0 }));
-await new Promise((r) => setTimeout(r, 10));
+await sleep(10);
 assert.equal(bubbled, false, "虚拟节点的点击必须 stopPropagation");
 
 // 6) 文件夹节点的折叠
-const folderTitle = holder.querySelector(".nav-folder-title");
+const folderTitle = mountRoot().querySelector(":scope > .nav-folder-title");
 const icon = folderTitle.querySelector(".collapse-icon");
 folderTitle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-assert.ok(holder.querySelector(".nav-folder").classList.contains("is-collapsed"), "点击应折叠");
+assert.ok(mountRoot().classList.contains("is-collapsed"), "点击应折叠");
 assert.ok(icon.classList.contains("is-collapsed"), "折叠图标也要同步状态");
 folderTitle.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-assert.ok(!holder.querySelector(".nav-folder").classList.contains("is-collapsed"), "再次点击应展开");
+assert.ok(!mountRoot().classList.contains("is-collapsed"), "再次点击应展开");
 
 // 6.1) 子目录按需展开：点开后才渲染内容，更深一层仍默认折叠
 const nestedTitle = nestedFolderEl.querySelector(":scope > .nav-folder-title");
@@ -427,11 +496,8 @@ assert.equal(nestedFolderEl.querySelectorAll(".vm-file").length, 1, "子目录�
 
 // 6.3) 强制重建（相当于核心重绘）后，展开状态仍然保留
 tree.syncNow(true);
-const holderRebuilt = Array.from(targetFolderEl.children).find((el) =>
-  el.classList.contains("vm-children")
-);
-const nestedAfterRebuild = holderRebuilt.querySelector(
-  ":scope > .vm-folder > .nav-folder-children > .nav-folder"
+const nestedAfterRebuild = mountRoot().querySelector(
+  ":scope > .nav-folder-children > .nav-folder"
 );
 assert.ok(nestedAfterRebuild, "重建后应重新渲染子目录");
 assert.ok(
@@ -453,20 +519,55 @@ fresh.innerHTML = `
     <div class="tree-item-inner nav-folder-title-content">01-进行中</div>
   </div>
   <div class="tree-item-children nav-folder-children"></div>`;
+fresh
+  .querySelector(":scope > .nav-folder-children")
+  .append(...nativeTargetRows(folders));
 targetFolderEl.replaceWith(fresh);
 tree.syncNow(false);
-const holder2 = Array.from(fresh.children).find((el) => el.classList.contains("vm-children"));
-assert.ok(holder2, "重建后应重新注入挂载容器");
-const directFiles = holder2.querySelectorAll(
-  ":scope > .nav-folder > .nav-folder-children > .nav-file"
+const coreFresh = fresh.querySelector(":scope > .nav-folder-children");
+const freshMount = () =>
+  coreFresh.querySelector(':scope > [data-vm-role="root"][data-vm-id="m1"]');
+assert.ok(freshMount(), "重建后应重新注入挂载行");
+assert.deepEqual(
+  itemNames(coreFresh),
+  ["Alpha", "Bravo", "Charlie", "00-真实笔记.md", "zzz-真实笔记.md"],
+  "重建后仍应排在正确位置"
+);
+const directFiles = freshMount().querySelectorAll(
+  ":scope > .nav-folder-children > .nav-file"
 );
 assert.equal(directFiles.length, 2, "重建后镜像内容应恢复");
-const nestedInHolder2 = holder2.querySelector(
-  ":scope > .nav-folder > .nav-folder-children > .nav-folder"
+const nestedInFresh = freshMount().querySelector(
+  ":scope > .nav-folder-children > .nav-folder"
 );
 assert.ok(
-  !nestedInHolder2.classList.contains("is-collapsed"),
+  !nestedInFresh.classList.contains("is-collapsed"),
   "重建后子目录的展开状态也应恢复"
+);
+
+// 7.1) 目标文件夹折叠时核心会摘掉 childrenEl：挂载行随之消失，展开后重新插回原位
+coreFresh.remove();
+fresh.classList.add("is-collapsed");
+tree.syncNow(true);
+assert.equal(
+  fresh.querySelectorAll('[data-vm-id="m1"]').length,
+  0,
+  "目标文件夹折叠时不应残留挂载行"
+);
+fresh.classList.remove("is-collapsed");
+const reopened = document.createElement("div");
+reopened.className = "tree-item-children nav-folder-children";
+reopened.append(...nativeTargetRows(folders));
+fresh.appendChild(reopened);
+tree.syncNow(false);
+assert.ok(
+  reopened.querySelector(':scope > [data-vm-role="root"][data-vm-id="m1"]'),
+  "重新展开后挂载行应重新注入"
+);
+assert.deepEqual(
+  itemNames(reopened),
+  ["Alpha", "Bravo", "Charlie", "00-真实笔记.md", "zzz-真实笔记.md"],
+  "重新展开后仍应排在正确位置"
 );
 
 // 8) 单文件挂载
@@ -480,20 +581,63 @@ hostSettings.mounts.push({
   collapsed: false,
 });
 tree.syncNow(true);
-const holder3 = Array.from(fresh.children).find((el) => el.classList.contains("vm-children"));
-const fileRoot = holder3.querySelector('[data-vm-role="root"][data-vm-id="m2"]');
+const fileRoot = reopened.querySelector(
+  ':scope > [data-vm-role="root"][data-vm-id="m2"]'
+);
 assert.ok(fileRoot, "单文件挂载应出现");
-assert.equal(fileRoot.closest(".nav-file").querySelector(".nav-file-title-content").textContent, "单独的 beta");
+assert.equal(
+  fileRoot.closest(".nav-file").querySelector(".nav-file-title-content").textContent,
+  "单独的 beta"
+);
+assert.deepEqual(
+  itemNames(reopened),
+  ["Alpha", "Bravo", "Charlie", "00-真实笔记.md", "单独的 beta", "zzz-真实笔记.md"],
+  "单文件挂载也应按名称插进真实文件中间"
+);
 
 // 9) 删除挂载后清理
 hostSettings.mounts = hostSettings.mounts.filter((m) => m.id !== "m2");
 tree.syncNow(true);
-assert.equal(holder3.querySelectorAll('[data-vm-id="m2"]').length, 0, "删除后节点应被清理");
+assert.equal(reopened.querySelectorAll('[data-vm-id="m2"]').length, 0, "删除后节点应被清理");
 
-// 10) 容器为空时也移除
+// 9.1) 两个同名挂载：连续同步不应互相换位（排序必须稳定，否则会反复触发 observer）
+hostSettings.mounts = [
+  {
+    id: "t1",
+    kind: "folder",
+    source: "03-资料/项目A",
+    under: "01-进行中",
+    name: "Twin",
+    enabled: true,
+    collapsed: true,
+  },
+  {
+    id: "t2",
+    kind: "folder",
+    source: "03-资料/项目A/子目录",
+    under: "01-进行中",
+    name: "Twin",
+    enabled: true,
+    collapsed: true,
+  },
+];
+tree.syncNow(true);
+const twinOrder = itemNames(reopened);
+assert.equal(twinOrder.filter((name) => name === "Twin").length, 2, "两个同名挂载都应出现");
+for (let i = 0; i < 3; i++) {
+  tree.syncNow(false);
+  assert.deepEqual(itemNames(reopened), twinOrder, "连续同步不应改变同名挂载的相对顺序");
+}
+
+// 10) 没有任何挂载时，虚拟节点应全部清空
 hostSettings.mounts = [];
 tree.syncNow(true);
-assert.equal(document.querySelectorAll(".vm-children").length, 0, "空容器应被移除");
+assert.equal(
+  document.querySelectorAll('[data-vm-role="root"]').length,
+  0,
+  "没有挂载时不应残留虚拟节点"
+);
+assert.equal(document.querySelectorAll(".vm-children").length, 0, "不应再创建独立挂载容器");
 
 // 11) 长按/右键虚拟挂载根目录 -> 弹出源目录的原生菜单
 hostSettings.mounts = [
@@ -508,7 +652,7 @@ hostSettings.mounts = [
   },
 ];
 tree.syncNow(true);
-const holder4 = Array.from(fresh.children).find((el) => el.classList.contains("vm-children"));
+const holder4 = reopened;
 const rootFolderTitle = holder4.querySelector('.vm-folder-title[data-vm-role="root"]');
 assert.ok(rootFolderTitle, "应有虚拟挂载根目录");
 
@@ -571,7 +715,7 @@ hostSettings.mounts = [
   },
 ];
 tree.syncNow(true);
-const holder5 = Array.from(fresh.children).find((el) => el.classList.contains("vm-children"));
+const holder5 = reopened;
 const savedContextMenu = explorerView.onFileContextMenu;
 delete explorerView.onFileContextMenu;
 holder5

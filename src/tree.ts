@@ -14,11 +14,7 @@ export interface TreeHost {
 const ATTR_ROLE = "data-vm-role";
 const ATTR_ID = "data-vm-id";
 const ATTR_SRC = "data-vm-src";
-const ATTR_CONTAINER = "data-vm-container";
 const ROLE_ROOT = "root";
-
-/** 我们自己的挂载容器（核心的虚拟滚动只会动它自己的 childrenEl，不会动这里）。 */
-const HOLDER_CLASS = "vm-children";
 
 /** 核心文件浏览器视图的类型。 */
 const EXPLORER_VIEW_TYPE = "file-explorer";
@@ -44,11 +40,12 @@ interface FileExplorerView {
  * 背景（Obsidian 1.8.x / 1.14.x 实测结构）：
  *   div.tree-item.nav-folder
  *     div.tree-item-self.nav-folder-title[data-path] > div.tree-item-inner
- *     div.tree-item-children.nav-folder-children   ← 由虚拟滚动 setChildrenInPlace 独占管理
+ *     div.tree-item-children.nav-folder-children   ← 由虚拟滚动 setChildrenInPlace 管理
  *
- * 所以绝不能把节点塞进 .nav-folder-children：滚动时会被整体替换掉。
- * 这里在 .nav-folder 下另挂一个同胞容器 .vm-children（同样带 tree-item-children 类，
- * 缩进和引导线保持一致），只由我们管理，核心不会碰。
+ * 挂载行必须和真实条目排在同一份列表里（否则只能固定在顶部），所以直接插进
+ * .nav-folder-children，并按名称插到正确位置。核心重绘（滚动、展开、排序变化）
+ * 会整体替换这个容器、把挂载行一起清掉；MutationObserver 会立刻发现并补注入，
+ * 所以列表最多闪一个微任务的时间。
  */
 export class VirtualTree {
   private observers = new Map<HTMLElement, MutationObserver>();
@@ -88,11 +85,6 @@ export class VirtualTree {
     this.observers.clear();
     for (const el of Array.from(
       document.querySelectorAll<HTMLElement>(`[${ATTR_ROLE}="${ROLE_ROOT}"]`)
-    )) {
-      el.remove();
-    }
-    for (const el of Array.from(
-      document.querySelectorAll<HTMLElement>(`.${HOLDER_CLASS}`)
     )) {
       el.remove();
     }
@@ -167,23 +159,36 @@ export class VirtualTree {
 
   /**
    * 核心每次重绘都会重建部分 DOM，我们跟着重新注入。
-   * 只监听“非虚拟节点”的增删，避免自己插入时反复触发。
+   *
+   * - 核心整体替换某层 children（虚拟滚动 / 展开 / 排序变化）时，挂载行会被一起
+   *   清掉：立刻补注入，避免用户看到列表闪一下。
+   * - 真实条目的增删（新建、删除、核心首次渲染）只需稍后重排 / 重建。
+   * - 我们自己插入的节点不算“变化”，否则会自触发。
    */
   private observe(container: HTMLElement): void {
     if (this.observers.has(container)) return;
     const obs = new MutationObserver((mutations) => {
+      const added = new Set<Node>();
+      const removed: Node[] = [];
       for (const m of mutations) {
-        const nodes = [...Array.from(m.addedNodes), ...Array.from(m.removedNodes)];
-        for (const n of nodes) {
-          const el = n as HTMLElement;
-          if (!el || el.nodeType !== 1) continue;
-          if (el.hasAttribute?.(ATTR_ROLE)) continue;
-          if (el.hasAttribute?.(ATTR_CONTAINER)) continue;
-          if (el.closest?.(`[${ATTR_ROLE}]`)) continue;
-          if (el.closest?.(`[${ATTR_CONTAINER}]`)) continue;
-          this.schedule(60);
-          return;
-        }
+        for (const n of Array.from(m.addedNodes)) added.add(n);
+        for (const n of Array.from(m.removedNodes)) removed.push(n);
+      }
+
+      // 我们自己的 place() 移动节点时也是“先移除再插入”，不算被核心清掉。
+      if (removed.some((n) => !added.has(n) && this.containsMount(n))) {
+        this.schedule(0);
+        return;
+      }
+
+      for (const n of [...added, ...removed]) {
+        const el = n as HTMLElement;
+        if (!el || el.nodeType !== 1) continue;
+        if (el.hasAttribute?.(ATTR_ROLE)) continue;
+        if (this.containsMount(el)) continue;
+        if (el.closest?.(`[${ATTR_ROLE}]`)) continue;
+        this.schedule(60);
+        return;
       }
     });
     obs.observe(container, { childList: true, subtree: true });
@@ -211,33 +216,34 @@ export class VirtualTree {
       const folderEl = anchors.get(cleanPath(mount.under) || "/") ?? null;
       if (!folderEl) continue;
 
+      // 目标文件夹折叠时核心可能根本不渲染 childrenEl；留到下次（展开会触发 observer）。
+      const childrenEl = this.coreChildrenOf(folderEl);
+      if (!childrenEl) continue;
+
       live.add(mount.id);
-      handled.add(mount.id);
-      const holder = this.holderOf(folderEl);
 
-      const existing = holder.querySelector<HTMLElement>(
-        `[${ATTR_ROLE}="${ROLE_ROOT}"][${ATTR_ID}="${mount.id}"]`
+      const existing = childrenEl.querySelector<HTMLElement>(
+        `:scope > [${ATTR_ROLE}="${ROLE_ROOT}"][${ATTR_ID}="${mount.id}"]`
       );
-      if (existing && existing.parentElement === holder && !rebuild.has(mount.id)) continue;
-
-      existing?.remove();
-      let node: HTMLElement | null = null;
-      if (src instanceof TFolder) node = this.buildFolder(mount, src, true, mount.id);
-      else if (src instanceof TFile) node = this.buildFile(mount, src, true);
+      let node: HTMLElement | null = existing;
+      if (!node || rebuild.has(mount.id)) {
+        node?.remove();
+        if (src instanceof TFolder) node = this.buildFolder(mount, src, true, mount.id);
+        else if (src instanceof TFile) node = this.buildFile(mount, src, true);
+        else node = null;
+      }
       if (!node) continue;
 
-      holder.appendChild(node);
-      this.orderHolder(holder);
+      if (node.parentElement !== childrenEl) childrenEl.appendChild(node);
+      this.place(node, childrenEl);
+      handled.add(mount.id);
     }
 
-    // 清理失效挂载点与空容器
+    // 清理失效挂载点（已删除 / 已停用 / 源文件不存在）
     for (const el of Array.from(
       container.querySelectorAll<HTMLElement>(`[${ATTR_ROLE}="${ROLE_ROOT}"]`)
     )) {
       if (!live.has(el.dataset.vmId ?? "")) el.remove();
-    }
-    for (const el of Array.from(container.querySelectorAll<HTMLElement>(`.${HOLDER_CLASS}`))) {
-      if (el.childElementCount === 0) el.remove();
     }
   }
 
@@ -245,9 +251,6 @@ export class VirtualTree {
     for (const el of Array.from(
       container.querySelectorAll<HTMLElement>(`[${ATTR_ROLE}="${ROLE_ROOT}"]`)
     )) {
-      el.remove();
-    }
-    for (const el of Array.from(container.querySelectorAll<HTMLElement>(`.${HOLDER_CLASS}`))) {
       el.remove();
     }
   }
@@ -279,41 +282,80 @@ export class VirtualTree {
   }
 
   /**
-   * 取得/创建我们自己的子容器（核心的虚拟滚动不会碰它）。
+   * 核心真正管理的那层 children。
    *
-   * 位置固定在标题之后、核心 children 之前：
-   * 核心展开文件夹时执行的是 `folderEl.appendChild(childrenEl)`，
-   * 放在前面才能保证「先挂载块、后真实内容」的相对顺序永远不变。
+   * 只有 `.nav-folder` 的直接子元素才可能是核心的 childrenEl；虚拟文件夹内部
+   * 也有 `nav-folder-children`，但它们在更深的层级，不会被这里误取。
+   * 目标文件夹没展开时核心不会渲染它，返回 null。
    */
-  private holderOf(folderEl: HTMLElement): HTMLElement {
+  private coreChildrenOf(folderEl: HTMLElement): HTMLElement | null {
     for (const child of Array.from(folderEl.children)) {
-      if (child instanceof HTMLElement && child.classList.contains(HOLDER_CLASS)) return child;
+      if (!(child instanceof HTMLElement)) continue;
+      if (child.classList.contains("nav-folder-children")) return child;
     }
-    // 只用 tree-item-children 拿缩进与引导线；刻意不加 nav-folder-children，
-    // 避免核心或第三方插件用该选择器查询时误拿到我们的容器。
-    const holder = createDiv({ cls: `tree-item-children ${HOLDER_CLASS}` });
-    holder.setAttribute(ATTR_CONTAINER, "1");
-    const anchor = folderEl.children[1] ?? null;
-    folderEl.insertBefore(holder, anchor);
-    return holder;
+    return null;
   }
 
-  /** 同一文件夹下的多个挂载点内部排序。 */
-  private orderHolder(holder: HTMLElement): void {
-    const nodes = Array.from(holder.children) as HTMLElement[];
-    if (nodes.length < 2) return;
-    const foldersFirst = this.settings.foldersFirst;
-    nodes.sort((a, b) => {
-      if (foldersFirst) {
-        const fa = a.classList.contains("nav-folder") ? 0 : 1;
-        const fb = b.classList.contains("nav-folder") ? 0 : 1;
-        if (fa !== fb) return fa - fb;
-      }
-      const na = a.dataset.vmName ?? "";
-      const nb = b.dataset.vmName ?? "";
-      return na.localeCompare(nb, undefined, { numeric: true, sensitivity: "base" });
+  /** 排序用的名字：虚拟节点用显示名称，真实节点用路径最后一段（带扩展名，和核心一致）。 */
+  private sortNameOf(el: HTMLElement): string {
+    const vmName = el.dataset.vmName;
+    if (vmName !== undefined) return vmName;
+    const pathEl = el.hasAttribute("data-path")
+      ? el
+      : el.querySelector<HTMLElement>("[data-path]");
+    const path = pathEl?.getAttribute("data-path") ?? "";
+    const at = path.lastIndexOf("/");
+    return at >= 0 ? path.slice(at + 1) : path;
+  }
+
+  private isFolderItem(el: HTMLElement): boolean {
+    return el.classList.contains("nav-folder");
+  }
+
+  /** 与原生文件浏览器一致：文件夹排在文件前面，再按名称做数字感知比较。 */
+  private compareItems(a: HTMLElement, b: HTMLElement): number {
+    const fa = this.isFolderItem(a) ? 0 : 1;
+    const fb = this.isFolderItem(b) ? 0 : 1;
+    if (fa !== fb) return fa - fb;
+    return this.sortNameOf(a).localeCompare(this.sortNameOf(b), undefined, {
+      numeric: true,
+      sensitivity: "base",
     });
-    for (const node of nodes) holder.appendChild(node);
+  }
+
+  /** 把挂载行放到真实同级条目中按名称该在的位置（已经对了就不动 DOM）。 */
+  private place(node: HTMLElement, parent: HTMLElement): void {
+    const items = Array.from(parent.children).filter(
+      (child): child is HTMLElement =>
+        child instanceof HTMLElement && child.classList.contains("tree-item")
+    );
+    const index = items.indexOf(node);
+    if (index < 0) return;
+
+    // 只在顺序真的不对时移动：前面出现了“更大”的、后面出现了“更小”的。
+    // 同名的挂载之间保持原有相对顺序，否则每次同步都会互相换位。
+    let misplaced = false;
+    for (let i = 0; i < items.length && !misplaced; i++) {
+      if (i === index) continue;
+      const cmp = this.compareItems(node, items[i]);
+      if (i < index && cmp < 0) misplaced = true;
+      else if (i > index && cmp > 0) misplaced = true;
+    }
+    if (!misplaced) return;
+
+    const next = items.find(
+      (item) => item !== node && this.compareItems(node, item) < 0
+    );
+    if (next) parent.insertBefore(node, next);
+    else parent.appendChild(node);
+  }
+
+  /** 核心重绘时是否把我们画的挂载根节点一起清掉了。 */
+  private containsMount(node: Node): boolean {
+    const el = node as HTMLElement;
+    if (!el || el.nodeType !== 1 || typeof el.getAttribute !== "function") return false;
+    if (el.getAttribute(ATTR_ROLE) === ROLE_ROOT) return true;
+    return !!el.querySelector?.(`[${ATTR_ROLE}="${ROLE_ROOT}"]`);
   }
 
   /* ------------------------------------------------------------------ 构造节点 */
