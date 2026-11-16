@@ -14,6 +14,8 @@ export interface TreeHost {
 const ATTR_ROLE = "data-vm-role";
 const ATTR_ID = "data-vm-id";
 const ATTR_SRC = "data-vm-src";
+/** 节点内容签名：挂载配置或源路径一变就重建，否则复用（避免整层重建带来的闪烁）。 */
+const ATTR_SIG = "data-vm-sig";
 const ROLE_ROOT = "root";
 
 /** 核心文件浏览器视图的类型。 */
@@ -43,15 +45,30 @@ interface FileExplorerView {
  *     div.tree-item-children.nav-folder-children   ← 由虚拟滚动 setChildrenInPlace 管理
  *
  * 挂载行必须和真实条目排在同一份列表里（否则只能固定在顶部），所以直接插进
- * .nav-folder-children，并按名称插到正确位置。核心重绘（滚动、展开、排序变化）
- * 会整体替换这个容器、把挂载行一起清掉；MutationObserver 会立刻发现并补注入，
- * 所以列表最多闪一个微任务的时间。
+ * .nav-folder-children，并按名称插到正确位置。
+ *
+ * 代价是：核心重绘（滚动、展开、排序变化）会整层替换这个容器，把挂载行一起清掉。
+ * 为了不闪，做了三件事：
+ *   1. 在 MutationObserver 回调里**同步**补注入 —— 回调是微任务，浏览器还没绘制，
+ *      用户看不到“消失了一下”的中间态；绝不能丢给 setTimeout（那会等到下一帧之后）；
+ *   2. 被清掉的节点先缓存起来，补注入时原样放回（展开状态、子节点都不用重建）；
+ *   3. 只有内容签名变化时才重建节点，普通的同步 / 排序调整只移动位置。
  */
 export class VirtualTree {
   private observers = new Map<HTMLElement, MutationObserver>();
   private dirty = new Set<string>();
   private timer: number | null = null;
+  private frame: number | null = null;
   private stopped = false;
+
+  /**
+   * 被核心整层重绘清掉的挂载节点，按窗格缓存。
+   * 补注入时直接放回同一个节点，既不会闪，也不会丢掉已展开的子目录。
+   */
+  private detached = new Map<HTMLElement, Map<string, HTMLElement>>();
+
+  /** 我们自己从 DOM 上摘下来的节点，observer 不该把这种移除当成“核心清掉了”。 */
+  private selfRemoved = new WeakSet<Node>();
 
   /**
    * 虚拟子目录的展开状态，按「挂载 id + 源路径」记忆。
@@ -77,17 +94,17 @@ export class VirtualTree {
 
   stop(): void {
     this.stopped = true;
-    if (this.timer !== null) {
-      window.clearTimeout(this.timer);
-      this.timer = null;
-    }
+    this.cancelPending();
     for (const obs of this.observers.values()) obs.disconnect();
     this.observers.clear();
     for (const el of Array.from(
       document.querySelectorAll<HTMLElement>(`[${ATTR_ROLE}="${ROLE_ROOT}"]`)
     )) {
+      this.selfRemoved.add(el);
       el.remove();
     }
+    this.detached.clear();
+    this.dirty.clear();
     this.expanded.clear();
   }
 
@@ -105,27 +122,69 @@ export class VirtualTree {
     this.schedule();
   }
 
+  /** 单个挂载的配置变了（改名、改挂载点、换源）：下次同步时重建它。 */
+  invalidate(id: string): void {
+    this.dirty.add(id);
+    this.schedule(0);
+  }
+
   schedule(delay = 90): void {
     if (this.stopped) return;
-    if (this.timer !== null) window.clearTimeout(this.timer);
+    this.cancelPending();
     this.timer = window.setTimeout(() => {
       this.timer = null;
       this.syncNow(false);
     }, delay);
   }
 
-  /* ------------------------------------------------------------------ 主同步 */
-
-  syncNow(force = false): void {
-    if (this.stopped) return;
+  /**
+   * 下一帧绘制前补一次同步。
+   *
+   * 用 rAF 而不是 setTimeout：浏览器执行完 rAF 回调才绘制，所以这次补注入和
+   * 核心的重绘在同一帧内完成，用户看不到列表闪一下。
+   */
+  private scheduleFrame(): void {
+    if (this.stopped || this.frame !== null) return;
     if (this.timer !== null) {
       window.clearTimeout(this.timer);
       this.timer = null;
     }
+    const run = (): void => {
+      this.frame = null;
+      this.syncNow(false);
+    };
+    if (typeof window.requestAnimationFrame === "function") {
+      this.frame = window.requestAnimationFrame(run);
+    } else {
+      this.timer = window.setTimeout(run, 16);
+    }
+  }
+
+  private cancelPending(): void {
+    if (this.timer !== null) {
+      window.clearTimeout(this.timer);
+      this.timer = null;
+    }
+    if (this.frame !== null) {
+      if (typeof window.cancelAnimationFrame === "function") {
+        window.cancelAnimationFrame(this.frame);
+      }
+      this.frame = null;
+    }
+  }
+
+  /* ------------------------------------------------------------------ 主同步 */
+
+  syncNow(force = false): void {
+    if (this.stopped) return;
+    this.cancelPending();
 
     this.pruneExpanded();
     const containers = this.containers();
-    if (containers.length === 0) return;
+    if (containers.length === 0) {
+      this.detached.clear();
+      return;
+    }
 
     const rebuild = force
       ? new Set(this.settings.mounts.map((m) => m.id))
@@ -135,6 +194,11 @@ export class VirtualTree {
     for (const container of containers) {
       this.observe(container);
       this.inject(container, rebuild, handled);
+    }
+
+    // 没缓存的窗格节点没有意义了，顺手清掉，避免缓存越积越多
+    for (const key of Array.from(this.detached.keys())) {
+      if (!key.isConnected) this.detached.delete(key);
     }
 
     // 没能注入的（目标文件夹当前没有渲染出来）留到下次，避免出现陈旧节点
@@ -160,52 +224,71 @@ export class VirtualTree {
   /**
    * 核心每次重绘都会重建部分 DOM，我们跟着重新注入。
    *
-   * - 核心整体替换某层 children（虚拟滚动 / 展开 / 排序变化）时，挂载行会被一起
-   *   清掉：立刻补注入，避免用户看到列表闪一下。
-   * - 真实条目的增删（新建、删除、核心首次渲染）只需稍后重排 / 重建。
-   * - 我们自己插入的节点不算“变化”，否则会自触发。
+   * - 我们画的挂载行被移出（核心整层替换 children、或整个文件夹节点被重建）：
+   *   **立刻**同步补注入。回调是微任务，浏览器此时还没绘制，所以不会闪。
+   * - 真实条目的增删（新建 / 删除 / 展开）：下一帧绘制前补一次就够了。
+   * - 我们自己移动 / 替换的节点不算“变化”，否则会自触发。
    */
   private observe(container: HTMLElement): void {
     if (this.observers.has(container)) return;
-    const obs = new MutationObserver((mutations) => {
-      const added = new Set<Node>();
-      const removed: Node[] = [];
-      for (const m of mutations) {
-        for (const n of Array.from(m.addedNodes)) added.add(n);
-        for (const n of Array.from(m.removedNodes)) removed.push(n);
-      }
-
-      // 我们自己的 place() 移动节点时也是“先移除再插入”，不算被核心清掉。
-      if (removed.some((n) => !added.has(n) && this.containsMount(n))) {
-        this.schedule(0);
-        return;
-      }
-
-      for (const n of [...added, ...removed]) {
-        const el = n as HTMLElement;
-        if (!el || el.nodeType !== 1) continue;
-        if (el.hasAttribute?.(ATTR_ROLE)) continue;
-        if (this.containsMount(el)) continue;
-        if (el.closest?.(`[${ATTR_ROLE}]`)) continue;
-        this.schedule(60);
-        return;
-      }
-    });
+    const obs = new MutationObserver((mutations) => this.onMutations(container, mutations));
     obs.observe(container, { childList: true, subtree: true });
     this.observers.set(container, obs);
+  }
+
+  private onMutations(container: HTMLElement, mutations: MutationRecord[]): void {
+    if (this.stopped || !container.isConnected) return;
+
+    const lost: HTMLElement[] = [];
+    let structural = false;
+
+    for (const m of mutations) {
+      for (const n of Array.from(m.removedNodes)) {
+        if (this.selfRemoved.has(n)) continue;
+        /*
+         * 判据是「回调执行时它还连在文档上吗」，而不是「同一批里有没有被重新加回来」。
+         * 我们自己 place() 挪动节点是「先移除再插入」，回调时它仍然连着，跳过；
+         * 而核心整层替换时，挂载行会真的掉出文档，就一定要补回去。
+         */
+        if ((n as Element).isConnected) continue;
+        const roots = this.mountRootsIn(n);
+        if (roots.length) {
+          lost.push(...roots);
+          continue;
+        }
+        if (n.nodeType === 1) structural = true;
+      }
+    }
+
+    if (lost.length) {
+      // 先把被清掉的节点收好，补注入时原样放回（展开状态也跟着保留）。
+      const cache = this.cacheFor(container);
+      for (const el of lost) {
+        const id = el.dataset.vmId;
+        if (id) cache.set(id, el);
+      }
+      // 同步补注入：不留出任何一帧让用户看到挂载行消失。
+      this.syncNow(false);
+      return;
+    }
+
+    if (structural) this.scheduleFrame();
   }
 
   /* -------------------------------------------------------------- 注入单个窗格 */
 
   private inject(container: HTMLElement, rebuild: Set<string>, handled: Set<string>): void {
     const mounts = this.settings.mounts.filter((m) => m.enabled && m.source);
+    const cache = this.cacheFor(container);
     if (mounts.length === 0) {
       this.clearContainer(container);
+      cache.clear();
       return;
     }
 
     const anchors = this.buildAnchorMap(container);
     const live = new Set<string>();
+    const placed = new Map<string, HTMLElement>();
 
     for (const mount of mounts) {
       const src = this.resolve(mount.source);
@@ -221,38 +304,102 @@ export class VirtualTree {
       if (!childrenEl) continue;
 
       live.add(mount.id);
+      const sig = this.signatureOf(mount, src);
 
-      const existing = childrenEl.querySelector<HTMLElement>(
+      let node = childrenEl.querySelector<HTMLElement>(
         `:scope > [${ATTR_ROLE}="${ROLE_ROOT}"][${ATTR_ID}="${mount.id}"]`
       );
-      let node: HTMLElement | null = existing;
-      if (!node || rebuild.has(mount.id)) {
-        node?.remove();
-        if (src instanceof TFolder) node = this.buildFolder(mount, src, true, mount.id);
-        else if (src instanceof TFile) node = this.buildFile(mount, src, true);
-        else node = null;
+      if (node && (rebuild.has(mount.id) || node.getAttribute(ATTR_SIG) !== sig)) {
+        this.discard(node, cache, mount.id);
+        node = null;
       }
+
+      // 被核心清掉的旧节点可以直接复用：内容和签名都对得上时不再重建。
+      if (!node) {
+        const cached = cache.get(mount.id);
+        if (cached && !cached.isConnected && cached.getAttribute(ATTR_SIG) === sig) {
+          node = cached;
+        }
+      }
+      if (!node) node = this.buildRoot(mount, src);
       if (!node) continue;
 
-      if (node.parentElement !== childrenEl) childrenEl.appendChild(node);
+      node.setAttribute(ATTR_SIG, sig);
+      cache.set(mount.id, node);
+      placed.set(mount.id, node);
+      // 只在位置不对时移动；正常同步不动 DOM，避免触发多余的 mutation。
       this.place(node, childrenEl);
       handled.add(mount.id);
     }
 
-    // 清理失效挂载点（已删除 / 已停用 / 源文件不存在）
+    // 清理失效挂载点（已删除 / 已停用 / 源文件不存在 / 挂在旧位置上的重复节点）
     for (const el of Array.from(
       container.querySelectorAll<HTMLElement>(`[${ATTR_ROLE}="${ROLE_ROOT}"]`)
     )) {
-      if (!live.has(el.dataset.vmId ?? "")) el.remove();
+      // 只有真正的行容器（.tree-item）才是挂载根节点；标题元素也带同一个标记，
+      // 但它们必须留在行里面，不能当成“重复节点”删掉。
+      if (!el.classList.contains("tree-item")) continue;
+      const id = el.dataset.vmId ?? "";
+      const current = placed.get(id);
+      if (!live.has(id) || (current && current !== el)) {
+        this.selfRemoved.add(el);
+        el.remove();
+      }
     }
+    // 只丢掉“配置里已经没有这个挂载”的缓存；目标文件夹暂时折叠时留着，
+    // 重新展开时可以直接放回同一个节点（展开状态不会丢）。
+    const known = new Set(this.settings.mounts.map((m) => m.id));
+    for (const id of Array.from(cache.keys())) {
+      if (!known.has(id)) cache.delete(id);
+    }
+  }
+
+  private buildRoot(mount: Mount, src: TAbstractFile): HTMLElement | null {
+    if (src instanceof TFolder) return this.buildFolder(mount, src, true, mount.id);
+    if (src instanceof TFile) return this.buildFile(mount, src, true);
+    return null;
+  }
+
+  /** 节点内容签名：源路径、显示名、角标开关任一变化都需要重建。 */
+  private signatureOf(mount: Mount, src: TAbstractFile): string {
+    return [mount.kind, src.path, mount.name, this.settings.showBadge ? "b" : "-"].join("\u0000");
+  }
+
+  private cacheFor(container: HTMLElement): Map<string, HTMLElement> {
+    let cache = this.detached.get(container);
+    if (!cache) {
+      cache = new Map();
+      this.detached.set(container, cache);
+    }
+    return cache;
+  }
+
+  private discard(node: HTMLElement, cache: Map<string, HTMLElement>, id: string): void {
+    this.selfRemoved.add(node);
+    node.remove();
+    if (cache.get(id) === node) cache.delete(id);
   }
 
   private clearContainer(container: HTMLElement): void {
     for (const el of Array.from(
       container.querySelectorAll<HTMLElement>(`[${ATTR_ROLE}="${ROLE_ROOT}"]`)
     )) {
+      if (!el.classList.contains("tree-item")) continue;
+      this.selfRemoved.add(el);
       el.remove();
     }
+  }
+
+  /** 一个被移除的节点里包含哪些挂载根节点（核心可能一次摘掉整棵子树）。 */
+  private mountRootsIn(node: Node): HTMLElement[] {
+    const el = node as HTMLElement;
+    if (!el || el.nodeType !== 1) return [];
+    if (typeof el.getAttribute !== "function") return [];
+    if (el.getAttribute(ATTR_ROLE) === ROLE_ROOT && el.classList.contains("tree-item")) {
+      return [el];
+    }
+    if (typeof el.querySelectorAll !== "function") return [];
+    return Array.from(el.querySelectorAll<HTMLElement>(`[${ATTR_ROLE}="${ROLE_ROOT}"]`));
   }
 
   /** 一次遍历建好 path -> .nav-folder 映射，避免每个挂载都全树扫描。 */
@@ -323,39 +470,27 @@ export class VirtualTree {
     });
   }
 
-  /** 把挂载行放到真实同级条目中按名称该在的位置（已经对了就不动 DOM）。 */
+  /**
+   * 把挂载行放到真实同级条目中按名称该在的位置。
+   *
+   * 只做一次 `insertBefore`（而不是「先 append 再移动」），并且位置已经正确时
+   * 完全不碰 DOM：这样核心的虚拟滚动 / 重绘不会因为我们自己的调整再被触发。
+   * 同名的挂载之间比较结果为 0，会稳定地排在已有同名项之后，不会互相换位。
+   */
   private place(node: HTMLElement, parent: HTMLElement): void {
     const items = Array.from(parent.children).filter(
       (child): child is HTMLElement =>
-        child instanceof HTMLElement && child.classList.contains("tree-item")
+        child instanceof HTMLElement && child !== node && child.classList.contains("tree-item")
     );
-    const index = items.indexOf(node);
-    if (index < 0) return;
+    const next = items.find((item) => this.compareItems(node, item) < 0) ?? null;
 
-    // 只在顺序真的不对时移动：前面出现了“更大”的、后面出现了“更小”的。
-    // 同名的挂载之间保持原有相对顺序，否则每次同步都会互相换位。
-    let misplaced = false;
-    for (let i = 0; i < items.length && !misplaced; i++) {
-      if (i === index) continue;
-      const cmp = this.compareItems(node, items[i]);
-      if (i < index && cmp < 0) misplaced = true;
-      else if (i > index && cmp > 0) misplaced = true;
+    let current = node.nextElementSibling;
+    while (current && !(current instanceof HTMLElement && current.classList.contains("tree-item"))) {
+      current = current.nextElementSibling;
     }
-    if (!misplaced) return;
+    if (node.parentElement === parent && current === next) return;
 
-    const next = items.find(
-      (item) => item !== node && this.compareItems(node, item) < 0
-    );
-    if (next) parent.insertBefore(node, next);
-    else parent.appendChild(node);
-  }
-
-  /** 核心重绘时是否把我们画的挂载根节点一起清掉了。 */
-  private containsMount(node: Node): boolean {
-    const el = node as HTMLElement;
-    if (!el || el.nodeType !== 1 || typeof el.getAttribute !== "function") return false;
-    if (el.getAttribute(ATTR_ROLE) === ROLE_ROOT) return true;
-    return !!el.querySelector?.(`[${ATTR_ROLE}="${ROLE_ROOT}"]`);
+    parent.insertBefore(node, next);
   }
 
   /* ------------------------------------------------------------------ 构造节点 */

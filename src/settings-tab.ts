@@ -28,12 +28,14 @@ export class VirtualMountSettingTab extends PluginSettingTab {
     }
 
     for (const mount of [...this.plugin.settings.mounts]) {
+      const under = mount.under || t("label.root");
+      const missing = !this.app.vault.getAbstractFileByPath(mount.source);
       new Setting(containerEl)
         .setName(mount.name)
         .setDesc(
           `${t(mount.kind === "folder" ? "settings.row.folder" : "settings.row.file")} · ${
             mount.source
-          } → ${mount.under || t("label.root")}`
+          } → ${under}${missing ? ` · ${t("settings.row.broken")}` : ""}`
         )
         .addToggle((toggle) =>
           toggle.setValue(mount.enabled).onChange(async (value) => {
@@ -101,6 +103,15 @@ export class VirtualMountSettingTab extends PluginSettingTab {
               await this.save();
             }
           })
+      );
+
+    new Setting(containerEl)
+      .setName(t("settings.index"))
+      .setDesc(t("settings.indexDesc"))
+      .addButton((b) =>
+        b
+          .setButtonText(t("btn.reindex"))
+          .onClick(() => void this.plugin.rebuildIndex())
       );
   }
 

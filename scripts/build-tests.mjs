@@ -21,3 +21,10 @@ esbuild.buildSync({
   entryPoints: ["src/i18n.ts"],
   outfile: "test/i18n.cjs",
 });
+
+esbuild.buildSync({
+  ...common,
+  entryPoints: ["src/mount-index.ts"],
+  external: ["obsidian"],
+  outfile: "test/mount-index.cjs",
+});

@@ -1,8 +1,24 @@
 import { Menu, Notice, Plugin, TAbstractFile, TFile, TFolder } from "obsidian";
-import { DEFAULT_SETTINGS, Mount, MountKind, newId, normalizeMount, Settings, cleanPath } from "./types";
+import {
+  DEFAULT_SETTINGS,
+  Mount,
+  MountKind,
+  newId,
+  normalizeMount,
+  Settings,
+  cleanPath,
+  defaultMountName,
+} from "./types";
 import { TreeHost, VirtualTree } from "./tree";
 import { VirtualMountSettingTab } from "./settings-tab";
 import { t } from "./i18n";
+import {
+  findMovedSource,
+  findMovedUnder,
+  readMountIndex,
+  StoredIndex,
+  writeMountIndex,
+} from "./mount-index";
 import { MountEditorModal, MountTargetModal, PathSuggestModal, folderEntries } from "./ui";
 
 /** 核心文件浏览器右键菜单触发 file-menu 时传的 source。 */
@@ -11,6 +27,8 @@ const EXPLORER_MENU_SOURCE = "file-explorer-context-menu";
 export default class VirtualMountPlugin extends Plugin {
   settings!: Settings;
   tree!: VirtualTree;
+  /** 上一次落盘的索引快照，用于路径失效时找回。 */
+  private index: StoredIndex | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -71,7 +89,10 @@ export default class VirtualMountPlugin extends Plugin {
       })
     );
 
-    this.app.workspace.onLayoutReady(() => this.tree.start());
+    this.app.workspace.onLayoutReady(() => {
+      // 先把「上次没跟上」的路径修好，再开始往 DOM 里注入。
+      void this.reconcileMounts().finally(() => this.tree.start());
+    });
   }
 
   onunload(): void {
@@ -79,8 +100,19 @@ export default class VirtualMountPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    const data = ((await this.loadData()) ?? {}) as Partial<Settings> & { mounts?: Partial<Mount>[] };
-    const mounts = Array.isArray(data.mounts) ? data.mounts.map((m) => normalizeMount(m)) : [];
+    const stored = (await this.loadData()) as
+      | (Partial<Settings> & { mounts?: Partial<Mount>[] })
+      | null;
+    const data = stored ?? {};
+    let mounts = Array.isArray(data.mounts) ? data.mounts.map((m) => normalizeMount(m)) : [];
+
+    this.index = await readMountIndex(this.app, this.manifest.dir, this.manifest.id);
+
+    // data.json 丢了（重装插件 / 换设备）但索引还在：用索引把挂载恢复回来。
+    if (!stored && mounts.length === 0 && this.index?.mounts?.length) {
+      mounts = this.index.mounts.map((m) => normalizeMount(m));
+    }
+
     this.settings = {
       ...DEFAULT_SETTINGS,
       ...data,
@@ -93,6 +125,13 @@ export default class VirtualMountPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+    const written = await writeMountIndex(
+      this.app,
+      this.manifest.dir,
+      this.manifest.id,
+      this.settings.mounts
+    );
+    if (written) this.index = written;
   }
 
   async removeMount(id: string): Promise<void> {
@@ -102,6 +141,18 @@ export default class VirtualMountPlugin extends Plugin {
     await this.saveSettings();
     this.tree.syncNow(true);
     new Notice(t("notice.unmounted"));
+  }
+
+  /** 重新扫一遍真实路径，刷新「改名/移动后找回」用的索引。 */
+  async rebuildIndex(): Promise<void> {
+    const written = await writeMountIndex(
+      this.app,
+      this.manifest.dir,
+      this.manifest.id,
+      this.settings.mounts
+    );
+    if (written) this.index = written;
+    new Notice(t("notice.reindexed"));
   }
 
   /* -------------------------------------------------------------- 快捷挂载 */
@@ -234,6 +285,9 @@ export default class VirtualMountPlugin extends Plugin {
   /**
    * 源目录/挂载点被重命名时，自动改写配置里的路径，避免挂载失效。
    * （这是普通 Obsidian 插件做不到的体验：配置里存的是路径字符串。）
+   *
+   * 自动名称的挂载还要跟着改名——否则路径对了、虚拟目录却还挂着旧名字，
+   * 排序位置也停在旧位置，看起来就像「没跟着变」。
    */
   private async remapPaths(oldPath: string, newPath: string): Promise<void> {
     let changed = false;
@@ -243,20 +297,69 @@ export default class VirtualMountPlugin extends Plugin {
       return value;
     };
     for (const mount of this.settings.mounts) {
-      const source = remap(mount.source);
-      const under = remap(mount.under);
-      if (source !== mount.source) {
-        mount.source = source;
-        changed = true;
+      const before = `${mount.source}\u0000${mount.under}\u0000${mount.name}`;
+
+      mount.source = remap(mount.source);
+      mount.under = remap(mount.under);
+
+      if (mount.nameMode !== "custom") {
+        const nextName = defaultMountName(mount.source, mount.kind);
+        if (nextName) mount.name = nextName;
       }
-      if (under !== mount.under) {
-        mount.under = under;
+
+      if (before !== `${mount.source}\u0000${mount.under}\u0000${mount.name}`) {
         changed = true;
+        // 名字 / 路径变了：这个节点要重建，排序位置也会跟着变。
+        this.tree.invalidate(mount.id);
       }
     }
     if (changed) {
       await this.saveSettings();
       this.tree.syncNow(true);
+    }
+  }
+
+  /**
+   * 启动时把「路径已经失效」的挂载重新找回来。
+   *
+   * 覆盖 rename 事件收不到的情况：插件没运行时改名、在别的设备上移动、
+   * 从系统文件管理器里拖走。索引里存着每个挂载最后一次的内容指纹，
+   * 用它去找唯一匹配的条目；不唯一就放弃（宁可不绑，也不能绑错）。
+   */
+  private async reconcileMounts(): Promise<void> {
+    if (this.settings.mounts.length === 0) return;
+
+    let changed = false;
+    const rebound: string[] = [];
+
+    for (const mount of this.settings.mounts) {
+      const snapshot = this.index?.mounts.find((m) => m.id === mount.id);
+
+      if (mount.source && !this.app.vault.getAbstractFileByPath(mount.source)) {
+        const next = findMovedSource(this.app, mount, snapshot);
+        if (next) {
+          mount.source = next;
+          if (mount.nameMode !== "custom") {
+            mount.name = defaultMountName(next, mount.kind) || mount.name;
+          }
+          rebound.push(mount.name);
+          changed = true;
+        }
+      }
+
+      if (mount.under && !(this.app.vault.getAbstractFileByPath(mount.under) instanceof TFolder)) {
+        const next = findMovedUnder(this.app, mount, snapshot);
+        if (next) {
+          mount.under = next;
+          changed = true;
+        }
+      }
+    }
+
+    if (!changed) return;
+    await this.saveSettings();
+    if (rebound.length > 0) {
+      new Notice(t("notice.rebound", { names: rebound.join(", ") }));
     }
   }
 }

@@ -9,7 +9,15 @@ import {
 } from "obsidian";
 import type VirtualMountPlugin from "./main";
 import { t } from "./i18n";
-import { Mount, MountKind, cleanPath, newId, normalizeMount } from "./types";
+import {
+  Mount,
+  MountKind,
+  NameMode,
+  cleanPath,
+  defaultMountName,
+  newId,
+  normalizeMount,
+} from "./types";
 
 export interface PathEntry {
   path: string;
@@ -124,7 +132,7 @@ export class MountEditorModal extends Modal {
             this.draft.kind === "file" ? fileEntries(this.app) : folderEntries(this.app, false);
           new PathSuggestModal(this.app, entries, (path) => {
             this.draft.source = path;
-            if (!this.draft.name) this.draft.name = path.split("/").pop() ?? "";
+            if (!this.draft.name) this.draft.name = defaultMountName(path, this.draft.kind);
             this.render();
           }).open();
         })
@@ -155,7 +163,7 @@ export class MountEditorModal extends Modal {
       .setDesc(t("editor.nameDesc"))
       .addText((text) =>
         text
-          .setPlaceholder(this.draft.source.split("/").pop() ?? "")
+          .setPlaceholder(defaultMountName(this.draft.source, this.draft.kind))
           .setValue(this.draft.name)
           .onChange((value) => {
             this.draft.name = value.trim();
@@ -211,12 +219,17 @@ export class MountEditorModal extends Modal {
         return;
       }
     }
-    const name = draft.name.trim() || source.split("/").pop() || "untitled";
+    const fallback = defaultMountName(source, draft.kind);
+    const trimmed = draft.name.trim();
+    const name = trimmed || fallback || "untitled";
+    // 名字和源条目默认名不一样 → 用户自定义，改名时保持不动；否则自动跟随。
+    const nameMode: NameMode = name === fallback ? draft.nameMode : "custom";
     const mount = normalizeMount({
       ...draft,
       source,
       under: underPath,
       name,
+      nameMode,
     });
     mount.kind = draft.kind;
 

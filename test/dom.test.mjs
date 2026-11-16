@@ -450,6 +450,40 @@ assert.deepEqual(
 );
 assert.equal(mountRoot().querySelectorAll(".vm-file").length, 2, "镜像行数应恢复");
 
+// 3.1) 补注入必须同步完成（MutationObserver 微任务内），并且复用被清掉的同一个节点。
+//      这是「和真实目录一起排序」之后不再乱闪的关键：不能等 setTimeout / 下一帧。
+const stableRoot = mountRoot();
+coreChildren.replaceChildren(...nativeTargetRows(folders));
+assert.equal(coreChildren.querySelector('[data-vm-id="m1"]'), null, "替换后此刻确实不在");
+await Promise.resolve();
+assert.equal(mountRoot(), stableRoot, "应在微任务内复用同一个节点补回，而不是重建或等下一帧");
+
+// 3.2) 反复同步不应重建节点、也不应产生重复节点（否则会自触发 observer 造成闪烁）
+for (let i = 0; i < 3; i++) tree.syncNow(false);
+assert.equal(mountRoot(), stableRoot, "普通同步应复用现有节点，不重建");
+assert.equal(
+  coreChildren.querySelectorAll(':scope > [data-vm-id="m1"]').length,
+  1,
+  "同一个挂载只能有一份节点"
+);
+assert.deepEqual(
+  itemNames(coreChildren),
+  ["Alpha", "Bravo", "Charlie", "00-真实笔记.md", "zzz-真实笔记.md"],
+  "连续同步不应改变排序"
+);
+
+// 3.3) 连续多次“核心滚动重绘”都不应丢节点、不应产生重复
+for (let i = 0; i < 3; i++) {
+  coreChildren.replaceChildren(...nativeTargetRows(folders));
+  await Promise.resolve();
+  assert.equal(mountRoot(), stableRoot, `第 ${i + 1} 次重绘后应复用同一节点`);
+  assert.equal(
+    coreChildren.querySelectorAll(':scope > [data-vm-id="m1"]').length,
+    1,
+    `第 ${i + 1} 次重绘后不应出现重复挂载`
+  );
+}
+
 // 4) 点击虚拟文件 -> 打开真实文件
 const alphaTitle = mountRoot().querySelector(
   '.nav-file-title[data-vm-src="03-资料/项目A/alpha.md"]'
@@ -509,6 +543,18 @@ const deepAfterRebuild = nestedAfterRebuild.querySelector(
   ":scope > .nav-folder-children > .nav-folder"
 );
 assert.ok(deepAfterRebuild.classList.contains("is-collapsed"), "重建后深层目录仍默认折叠");
+
+// 6.4) 核心整层重绘（滚动）时，已展开的子目录随节点一起保留，不会回到折叠态
+const beforeSwipe = mountRoot();
+coreChildren.replaceChildren(...nativeTargetRows(folders));
+await Promise.resolve();
+assert.equal(mountRoot(), beforeSwipe, "整层重绘后应复用原节点");
+assert.ok(
+  !mountRoot()
+    .querySelector(":scope > .nav-folder-children > .nav-folder")
+    .classList.contains("is-collapsed"),
+  "复用节点后子目录应保持展开"
+);
 
 // 7) 整个文件夹节点被核心重建后，能重新注入
 const fresh = document.createElement("div");

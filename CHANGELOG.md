@@ -2,6 +2,24 @@
 
 > 中文在前，English follows. / Chinese first, then English.
 
+## 0.2.3
+
+### 中文
+
+- 修复：挂载不再「改名后不跟着变」。插件运行期间重命名 / 移动源文件夹或挂载点时，路径、自动推导的显示名和排序位置会一起更新；用户自定义的显示名保持不动。
+- 新增挂载索引 `mounts.index.json`（与 `data.json` 同目录）：记录每个挂载最后一次的路径和内容指纹。插件没运行时发生的改名 / 移动，会在启动时按指纹自动重新关联；`data.json` 丢失时也能用索引恢复挂载。
+- 安全策略：只有唯一匹配才重新绑定；同一项目的多份副本同时存在时放弃，不改动配置。挂载点永远不会被找回进它自己的源目录内部。
+- 修复：与真实目录混排后挂载行会乱闪。核心重绘时改为在同一个任务内、浏览器绘制之前同步补注入，并复用被清掉的同一个节点（已展开的子目录不会回到折叠态）；只有内容签名变化时才重建节点。
+- 设置页：源路径失效的挂载会标出「路径不存在」，并新增「重建挂载索引」按钮。
+
+### English
+
+- Fix: mounts now follow renames. Renaming or moving the source folder (or the target folder) while the plugin is running updates the path, the automatically derived display name and the sort position together; a display name you typed yourself is left alone.
+- New mount index `mounts.index.json` (next to `data.json`): it records each mount's last known paths and a content fingerprint. Renames and moves that happen while the plugin is not running are re-linked at startup; if `data.json` is lost, the index restores the mounts.
+- Safety first: only a unique fingerprint match is accepted. Two identical copies of a folder leave the configuration untouched, and a target folder is never re-linked into the mount's own source tree.
+- Fix: no more flicker when mounts are sorted together with real entries. A core repaint is now repaired synchronously in the same task, before the browser paints, by re-inserting the very same node (expanded subfolders keep their state); nodes are rebuilt only when their content signature changes.
+- Settings tab: broken paths are flagged as “Path missing”, and a “Rebuild mount index” button was added.
+
 ## 0.2.2
 
 ### 中文

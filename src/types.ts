@@ -3,6 +3,14 @@ import { normalizePath } from "obsidian";
 /** 挂载类型：整个文件夹镜像，还是单篇文件。 */
 export type MountKind = "folder" | "file";
 
+/**
+ * 显示名称的来源。
+ *
+ * - `auto`：名称跟随真实文件/文件夹改名（重命名后自动更新，排序位置也跟着变）；
+ * - `custom`：用户自己起的名字，改名时保持不动。
+ */
+export type NameMode = "auto" | "custom";
+
 export interface Mount {
   id: string;
   kind: MountKind;
@@ -12,6 +20,8 @@ export interface Mount {
   under: string;
   /** 显示名称，留空则用源路径最后一段。 */
   name: string;
+  /** 名称是否随真实条目自动变化。 */
+  nameMode: NameMode;
   enabled: boolean;
   collapsed: boolean;
 }
@@ -40,6 +50,7 @@ export const DEFAULT_MOUNT: Omit<Mount, "id" | "source"> = {
   kind: "folder",
   under: "",
   name: "",
+  nameMode: "auto",
   enabled: true,
   // 和原生文件夹一致：新建的挂载点默认折叠，点开后才展开。
   collapsed: true,
@@ -63,18 +74,35 @@ export function cleanPath(path: string): string {
   return normalized === "/" ? "" : normalized;
 }
 
+/** 源条目的默认显示名：文件夹用最后一段，文件用不带扩展名的文件名（和原生一致）。 */
+export function defaultMountName(source: string, kind: MountKind): string {
+  const base = cleanPath(source).split("/").pop() ?? "";
+  return kind === "file" ? base.replace(/\.[^.]+$/, "") : base;
+}
+
 /** 把挂载配置规范化，兼容旧版本/手写 data.json。 */
 export function normalizeMount(raw: Partial<Mount>): Mount {
   const kind: MountKind = raw.kind === "file" ? "file" : "folder";
   const source = cleanPath(raw.source ?? "");
   const under = cleanPath(raw.under ?? "");
-  const name = (raw.name ?? "").trim() || source.split("/").pop() || "未命名";
+  const fallback = defaultMountName(source, kind);
+  const given = (raw.name ?? "").trim();
+  const name = given || fallback || "未命名";
+
+  /*
+   * 旧配置没有 nameMode：如果名字恰好等于源条目的默认名，就当作自动跟随；
+   * 否则说明用户改过，保持自定义，避免一升级就把用户起的名字覆盖掉。
+   */
+  const declared = raw.nameMode === "custom" || raw.nameMode === "auto" ? raw.nameMode : null;
+  const nameMode: NameMode = declared ?? (given && given !== fallback ? "custom" : "auto");
+
   return {
     id: raw.id || newId(),
     kind,
     source,
     under,
     name,
+    nameMode,
     enabled: raw.enabled !== false,
     // 只有显式记录过“展开”的挂载才保持展开；新挂载 / 旧配置缺字段时默认折叠。
     collapsed: raw.collapsed !== false,

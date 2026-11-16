@@ -242,14 +242,39 @@ const folders = new Map([["/", root]]);
 for (const p of ["01-进行中", "03-资料", "03-资料/项目A"]) folders.set(p, new TFolder(p));
 const file = new TFile("03-资料/项目A/alpha.md");
 
+// 用于「改名后自动找回」的目录：内容和索引里的指纹一致
+folders.set("09-归档", new TFolder("09-归档"));
+const reportFolder = new TFolder("09-归档/报告");
+const reportNote = new TFile("09-归档/报告/x.md");
+reportFolder.children = [reportNote];
+folders.set("09-归档/报告", reportFolder);
+
+/** 内存版 vault adapter，用来验证索引文件真的落盘了 */
+const adapterFiles = new Map();
+const adapter = {
+  files: adapterFiles,
+  async exists(path) {
+    return adapterFiles.has(path);
+  },
+  async read(path) {
+    if (!adapterFiles.has(path)) throw new Error("ENOENT");
+    return adapterFiles.get(path);
+  },
+  async write(path, data) {
+    adapterFiles.set(path, data);
+  },
+  async mkdir() {},
+};
+
 const handlers = {};
 
 const app = {
   vault: {
+    adapter,
     getRoot: () => root,
     getAbstractFileByPath: (p) => folders.get(p) ?? (p === file.path ? file : null),
     on: () => ({ unsubscribe() {} }),
-    getAllLoadedFiles: () => [...folders.values(), file],
+    getAllLoadedFiles: () => [...folders.values(), file, reportNote],
   },
   workspace: {
     onLayoutReady: (cb) => cb(),
@@ -341,15 +366,91 @@ const noSource = await plugin.addMount("folder", "不存在的目录/xx", "", "x
 assert.equal(noSource.ok, false);
 assert.match(noSource.error, /源路径不存在/);
 
-// 4) 路径跟随重命名
+// 3.3) 索引文件真的写出来了，并且带内容指纹
+const indexPath = ".obsidian/plugins/virtual-mount/mounts.index.json";
+assert.ok(adapterFiles.has(indexPath), "保存设置时应写出挂载索引");
+const indexed = JSON.parse(adapterFiles.get(indexPath));
+assert.equal(indexed.version, 1);
+assert.equal(indexed.mounts.length, plugin.settings.mounts.length, "索引应与挂载配置一一对应");
+assert.ok(
+  indexed.mounts.every((m) => typeof m.sourceSignature === "string"),
+  "每个挂载都应记录内容指纹"
+);
+
+// 4) 路径跟随重命名：路径、自动名称都要跟着变，自定义名称不动
+//    先按真实情况把仓库里的对象也改名，再触发 remap（模拟 Obsidian 的 rename 事件）。
+const sourceFolder = folders.get("03-资料/项目A");
+folders.delete("03-资料/项目A");
+sourceFolder.path = "03-资料/项目B";
+sourceFolder.name = "项目B";
+folders.set("03-资料/项目B", sourceFolder);
+file.path = "03-资料/项目B/alpha.md";
+
 plugin.settings.mounts[0].source = "03-资料/项目A";
+plugin.settings.mounts[0].nameMode = "auto";
+plugin.settings.mounts[0].name = "项目A";
 await plugin.remapPaths("03-资料/项目A", "03-资料/项目B");
 assert.equal(plugin.settings.mounts[0].source, "03-资料/项目B", "源路径应跟随重命名");
+assert.equal(plugin.settings.mounts[0].name, "项目B", "自动名称应跟随文件夹重命名");
 assert.equal(
   plugin.settings.mounts[1].source,
   "03-资料/项目B/alpha.md",
   "源文件夹里的单文件挂载也应跟随重命名"
 );
+assert.equal(plugin.settings.mounts[1].name, "alpha 镜像", "用户自定义的名称不能被改名覆盖");
+
+// 4.1) data.json 丢了（重装插件 / 换设备）时，用索引把挂载恢复回来
+const plugin2 = new PluginClass(app, { id: "virtual-mount", version: "0.2.3" });
+plugin2._data = null;
+await plugin2.onload();
+assert.ok(plugin2.settings.mounts.length > 0, "没有 data.json 时应从索引恢复挂载");
+assert.deepEqual(
+  plugin2.settings.mounts.map((m) => m.source),
+  plugin.settings.mounts.map((m) => m.source),
+  "恢复出来的挂载应和索引一致"
+);
+plugin2.onunload();
+
+// 4.2) 插件没运行时目录被改名：启动后按索引指纹自动重新关联
+adapterFiles.set(
+  indexPath,
+  JSON.stringify({
+    version: 1,
+    updatedAt: Date.now(),
+    mounts: [
+      {
+        id: "vm-r",
+        kind: "folder",
+        source: "09-归档/旧报告",
+        under: "01-进行中",
+        name: "旧报告",
+        nameMode: "auto",
+        enabled: true,
+        collapsed: true,
+        sourceSignature: "d|f:x.md",
+        underSignature: "",
+      },
+    ],
+  })
+);
+const plugin3 = new PluginClass(app, { id: "virtual-mount", version: "0.2.3" });
+plugin3._data = {
+  mounts: [
+    {
+      id: "vm-r",
+      kind: "folder",
+      source: "09-归档/旧报告",
+      under: "01-进行中",
+      name: "旧报告",
+      nameMode: "auto",
+    },
+  ],
+};
+await plugin3.onload();
+await new Promise((r) => setTimeout(r, 20));
+assert.equal(plugin3.settings.mounts[0].source, "09-归档/报告", "启动时应把失效路径重新绑到新位置");
+assert.equal(plugin3.settings.mounts[0].name, "报告", "自动名称也应同步更新");
+plugin3.onunload();
 
 // 5) 删除挂载
 const before = plugin.settings.mounts.length;

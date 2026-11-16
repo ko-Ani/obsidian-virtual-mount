@@ -39,6 +39,11 @@ const STRINGS = {
   "notice.cannotMountRoot": { en: "The vault root can't be mounted", zh: "不能挂载仓库根目录本身" },
   "notice.sourceEmpty": { en: "Source path is required", zh: "请填写源路径" },
   "notice.copyFailed": { en: "Copy failed", zh: "复制失败" },
+  "notice.rebound": {
+    en: "Re-linked after a rename or move: {names}",
+    zh: "已重新关联被改名/移动的挂载：{names}",
+  },
+  "notice.reindexed": { en: "Mount index rebuilt", zh: "挂载索引已重建" },
   "label.root": { en: "vault root", zh: "仓库根目录" },
 
   /* ------------------------------------------------------------------ 错误 */
@@ -122,6 +127,16 @@ const STRINGS = {
   "settings.options": { en: "Display options", zh: "显示选项" },
   "settings.row.folder": { en: "Mirror", zh: "镜像" },
   "settings.row.file": { en: "Single note", zh: "单文件" },
+  "settings.row.broken": {
+    en: "Path missing — this mount is not shown",
+    zh: "路径不存在，此挂载暂不显示",
+  },
+  "settings.index": { en: "Mount index", zh: "挂载索引" },
+  "settings.indexDesc": {
+    en: "An index file remembers where each mount last pointed, so it can be re-linked automatically after a rename or move.",
+    zh: "索引文件记录每个挂载最后一次指向的真实位置，改名或移动后可以自动重新关联。",
+  },
+  "btn.reindex": { en: "Rebuild", zh: "重建" },
   "settings.foldersFirst": { en: "Folders before notes", zh: "文件夹排在文件前面" },
   "settings.foldersFirstDesc": {
     en: "Order inside virtual folders only. The mount itself is inserted among the target folder's real entries by name.",
